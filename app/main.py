@@ -16,7 +16,7 @@ if not TOKEN:
     raise RuntimeError("Не задан TELEGRAM_BOT_TOKEN")
 
 # URL сервиса Render (твой фиксированный адрес)
-RENDER_URL = "https://test-1-5dj6.onrender.com"
+RENDER_URL = "https://anon-chat-bot-n21b.onrender.com"
 
 # Путь и полный URL webhook
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
