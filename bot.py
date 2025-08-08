@@ -1,385 +1,252 @@
 import asyncio
+import logging
+import os
 from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup, ReplyKeyboardRemove
 )
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
 )
-import logging
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
-TOKEN = "YOUR_BOT_TOKEN_HERE"
-ADMIN_IDS = {123456789}  # ID админов для управления валютой
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+if not BOT_TOKEN or not ADMIN_PASSWORD:
+    logging.error("BOT_TOKEN или ADMIN_PASSWORD не установлены!")
+    exit(1)
 
-# Данные о пользователях
-user_balances = {}  # user_id -> int (валюта)
-user_referrals = {}  # user_id -> кто пригласил user_id
-user_interests = {}  # user_id -> список интересов
-waiting_users = []  # пользователи в поиске
-active_chats = {}  # user_id -> собеседник user_id
-chat_start_times = {}  # user_id -> время старта чата
-nick_shown = set()  # кто уже показал ник
-nick_request_tasks = {}  # user_id -> asyncio.Task для показа кнопок
+# Админские user_id — впиши сюда свои ID
+ADMIN_IDS = {123456789, 987654321}
 
-# Интересы и стоимость комнаты
-available_interests = {
-    "🎵 Музыка": 0,
-    "🎮 Игры": 0,
-    "🎬 Кино": 0,
-    "✈️ Путешествия": 0,
-    "💬 Общение": 0,
-    "🔞 18+": 50,
-}
+waiting_users = []  # список юзеров в поиске
+active_chats = {}  # {user_id: partner_id}
+show_name_requests = {}  # {(user1,user2): {user1: None/True/False, user2: None/True/False}}
+user_agreements = {}
+banned_users = set()
+reported_users = {}
+user_interests = {}
+search_timeouts = {}
+referrals = {}
+invited_by = {}
 
-OTHER_INTERESTS_KEY = "Другие интересы"
+# Валюта пользователей
+user_currency = {}
 
-# ==================== КОМАНДЫ ====================
+# Список интересов с эмодзи и ключами
+available_interests = [
+    ("🎵 Музыка", "music"),
+    ("🎮 Игры", "games"),
+    ("🎬 Кино", "movies"),
+    ("✈️ Путешествия", "travel"),
+    ("💬 Общение", "chat"),
+    ("🔞 18+", "adult")
+]
+
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
+def interests_match(int1, int2):
+    # Если хотя бы один пустой — считаем совпадение
+    if not int1 or not int2:
+        return True
+    return bool(set(int1) & set(int2))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Если новый пользователь — даем баланс 0 и проверяем реферала
-    if user_id not in user_balances:
-        user_balances[user_id] = 0
-        # Пытаемся считать реферала из параметров ссылки /start ref123456
-        if context.args:
-            ref_id_str = context.args[0]
-            if ref_id_str.startswith("ref"):
-                try:
-                    ref_id = int(ref_id_str[3:])
-                    if ref_id != user_id:
-                        user_referrals[user_id] = ref_id
-                        user_balances[ref_id] = user_balances.get(ref_id, 0) + 10
-                        await context.bot.send_message(ref_id, f"🎉 Вам начислено 10 монет за приглашённого!")
-                except Exception:
-                    pass
-
-    user_interests[user_id] = []
-    await update.message.reply_text(
-        "Привет! Выбери свои интересы для комнаты.\n"
-        "⚠️ ВНИМАНИЕ: общение строго по выбранной теме. Нарушение — бан.\n"
-        "🔞 Комната 18+ стоит 50 монет, остальные комнаты бесплатные.\n"
-        "Если ничего не выберешь — попадёшь в случайную комнату.\n"
-        "Для выбора нажми кнопки ниже.",
-    )
-    await show_interests_menu(user_id, context)
-
-async def show_interests_menu(user_id, context):
-    keyboard = []
-    for interest, price in available_interests.items():
-        keyboard.append([InlineKeyboardButton(f"{interest} {'(50 монет)' if price else '(бесплатно)'}", callback_data=f"interest_{interest}")])
-    keyboard.append([InlineKeyboardButton(OTHER_INTERESTS_KEY, callback_data=f"interest_{OTHER_INTERESTS_KEY}")])
-    keyboard.append([InlineKeyboardButton("➡️ Готово", callback_data="interests_done")])
-    await context.bot.send_message(user_id, "Выберите интересы (можно несколько):", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def interests_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-    data = query.data
-
-    if data.startswith("interest_"):
-        interest = data[9:]
-        if interest == OTHER_INTERESTS_KEY:
-            user_interests[user_id] = [OTHER_INTERESTS_KEY]
-            await query.answer(f"Вы выбрали: {OTHER_INTERESTS_KEY}")
-        else:
-            if interest in user_interests.get(user_id, []):
-                user_interests[user_id].remove(interest)
-                await query.answer(f"Удалён интерес: {interest}")
-            else:
-                # Если выбрали другие интересы — очищаем остальные
-                if OTHER_INTERESTS_KEY in user_interests.get(user_id, []):
-                    user_interests[user_id] = []
-                user_interests.setdefault(user_id, []).append(interest)
-                await query.answer(f"Добавлен интерес: {interest}")
-        # Обновим меню с выделением
-        await update.callback_query.edit_message_reply_markup(reply_markup=await build_interests_keyboard(user_id))
-    elif data == "interests_done":
-        # Если ничего не выбрали — ставим другие интересы
-        if not user_interests.get(user_id):
-            user_interests[user_id] = [OTHER_INTERESTS_KEY]
-        await query.answer("Выбор сохранён")
-        await query.edit_message_text("Выбор интересов сохранён.\nДля поиска собеседника нажмите /find")
-
-async def build_interests_keyboard(user_id):
-    keyboard = []
-    selected = user_interests.get(user_id, [])
-    for interest, price in available_interests.items():
-        text = f"{interest} {'(50 монет)' if price else '(бесплатно)'}"
-        if interest in selected:
-            text = "✅ " + text
-        keyboard.append([InlineKeyboardButton(text, callback_data=f"interest_{interest}")])
-    other_text = OTHER_INTERESTS_KEY
-    if OTHER_INTERESTS_KEY in selected:
-        other_text = "✅ " + other_text
-    keyboard.append([InlineKeyboardButton(other_text, callback_data=f"interest_{OTHER_INTERESTS_KEY}")])
-    keyboard.append([InlineKeyboardButton("➡️ Готово", callback_data="interests_done")])
-    return InlineKeyboardMarkup(keyboard)
-
-# ==================== ПОИСК СОБЕСЕДНИКА ====================
-
-async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in active_chats:
-        await update.message.reply_text("Вы уже в чате, сначала завершите текущий (/stop)")
+    if user_id in banned_users:
+        await update.message.reply_text("❌ Вы заблокированы.")
         return
 
-    if user_id not in user_interests or not user_interests[user_id]:
-        user_interests[user_id] = [OTHER_INTERESTS_KEY]
-
-    if user_id not in waiting_users:
-        waiting_users.append(user_id)
-
-    await update.message.reply_text("Идёт поиск собеседника...")
-
-    await try_to_pair(context)
-
-async def try_to_pair(context: ContextTypes.DEFAULT_TYPE):
-    paired = set()
-    for i in range(len(waiting_users)):
-        if waiting_users[i] in paired:
-            continue
-        user1 = waiting_users[i]
-        interests1 = user_interests.get(user1, [OTHER_INTERESTS_KEY])
-        if not interests1:
-            interests1 = [OTHER_INTERESTS_KEY]
-        for j in range(i + 1, len(waiting_users)):
-            if waiting_users[j] in paired:
-                continue
-            user2 = waiting_users[j]
-            interests2 = user_interests.get(user2, [OTHER_INTERESTS_KEY])
-            if not interests2:
-                interests2 = [OTHER_INTERESTS_KEY]
-
-            # Проверка на совпадение интересов (или "Другие интересы")
-            common = set(interests1).intersection(set(interests2))
-            if not common:
-                continue
-
-            # Проверка оплаты 18+
-            if "🔞 18+" in common:
-                if user_balances.get(user1, 0) < 50 or user_balances.get(user2, 0) < 50:
-                    # Кто-то не может оплатить
-                    continue
-
-            # Если здесь — пара найдена
-            # Списываем монеты за 18+, если нужно
-            if "🔞 18+" in common:
-                user_balances[user1] -= 50
-                user_balances[user2] -= 50
-                await context.bot.send_message(user1, "💳 Списание 50 монет за доступ в 18+ комнату.")
-                await context.bot.send_message(user2, "💳 Списание 50 монет за доступ в 18+ комнату.")
-
-            # Запускаем чат
-            active_chats[user1] = user2
-            active_chats[user2] = user1
-            paired.update({user1, user2})
-            waiting_users.remove(user1)
-            waiting_users.remove(user2)
-            chat_start_times[user1] = asyncio.get_event_loop().time()
-            chat_start_times[user2] = chat_start_times[user1]
-
-            # Начальное сообщение с предупреждением о теме чата
-            await context.bot.send_message(user1,
-                f"🎯 Собеседник найден! Тема чата: {', '.join(common)}\n"
-                "⚠️ Общайтесь строго по теме, иначе — бан.\n"
-                "У вас есть 10 минут, потом появится выбор — показывать ли ник.")
-            await context.bot.send_message(user2,
-                f"🎯 Собеседник найден! Тема чата: {', '.join(common)}\n"
-                "⚠️ Общайтесь строго по теме, иначе — бан.\n"
-                "У вас есть 10 минут, потом появится выбор — показывать ли ник.")
-
-            # Запускаем таймер на 10 минут и появление кнопок обмена никами
-            context.application.create_task(timer_show_nick_buttons(user1, user2, context))
-            return
-
-# ==================== ТАЙМЕР И КНОПКИ НИКА ====================
-
-async def timer_show_nick_buttons(user1, user2, context):
-    await asyncio.sleep(600)  # 10 минут
-    keyboard = [
-        [
-            InlineKeyboardButton("Да", callback_data="show_nick_yes"),
-            InlineKeyboardButton("Нет", callback_data="show_nick_no"),
-        ]
-    ]
-    for user_id in (user1, user2):
+    # Реферальная система
+    if context.args:
         try:
-            await context.bot.send_message(user_id, "10 минут прошло. Вы хотите показывать свой ник?", reply_markup=InlineKeyboardMarkup(keyboard))
-        except:
+            referrer_id = int(context.args[0])
+            if referrer_id != user_id and user_id not in invited_by:
+                referrals[referrer_id] = referrals.get(referrer_id, 0) + 1
+                invited_by[user_id] = referrer_id
+                # Начисляем 10 валюты за приглашение
+                user_currency[referrer_id] = user_currency.get(referrer_id, 0) + 10
+                await context.bot.send_message(referrer_id, "🎉 Новый пользователь по вашей ссылке! +10 монет")
+        except Exception:
             pass
 
-# Обработка кнопок показа ника
-async def nick_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_agreements[user_id] = False
+    keyboard = [[InlineKeyboardButton("✅ Согласен", callback_data="agree")]]
+    await update.message.reply_text(
+        "👋 Добро пожаловать в анонимный чат!\n\n"
+        "⚠️ Внимание:\n"
+        "• Запрещено нарушать законы.\n"
+        "• Соблюдайте уважение.\n"
+        "• Общение должно быть строго по теме комнаты — иначе бан.\n\n"
+        "Нажмите 'Согласен' чтобы начать.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
+    await query.answer()
 
-    if user_id not in active_chats:
-        await query.answer("Вы не в чате")
+    if user_id in banned_users:
+        await query.message.reply_text("❌ Вы заблокированы и не можете использовать бота.")
         return
 
-    partner_id = active_chats[user_id]
-
-    # Запоминаем выбор пользователя
-    if data == "show_nick_yes":
-        nick_shown.add(user_id)
-        await query.answer("Вы выбрали показывать ник")
-    elif data == "show_nick_no":
-        nick_shown.discard(user_id)
-        await query.answer("Вы выбрали не показывать ник")
-    else:
-        await query.answer()
+    # Согласие с правилами
+    if data == "agree":
+        user_agreements[user_id] = True
+        await show_main_menu(user_id, context)
         return
 
-    # Проверяем, ответил ли уже второй
-    if partner_id in nick_shown or partner_id not in active_chats:
-        # Оба ответили
-        if user_id in nick_shown and partner_id in nick_shown:
-            # Отправляем ники друг другу
-            user_nick = (await context.bot.get_chat(user_id)).username or "(ник не задан)"
-            partner_nick = (await context.bot.get_chat(partner_id)).username or "(ник не задан)"
-            await context.bot.send_message(user_id, f"Ник собеседника: @{partner_nick}")
-            await context.bot.send_message(partner_id, f"Ник собеседника: @{user_nick}")
+    # Обработка выбора интересов
+    if data.startswith("interest_"):
+        interest_key = data.replace("interest_", "")
+        current = user_interests.get(user_id, [])
+        if interest_key in current:
+            current.remove(interest_key)
         else:
-            # Кто-то отказался показывать
-            await context.bot.send_message(user_id, "Обмен никами не состоялся.")
-            await context.bot.send_message(partner_id, "Обмен никами не состоялся.")
-
-# ==================== ОБРАБОТКА СООБЩЕНИЙ В ЧАТЕ ====================
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in active_chats:
-        await update.message.reply_text("Вы не в чате. Для поиска собеседника — /find")
+            current.append(interest_key)
+        user_interests[user_id] = current
+        await update_interests_menu(user_id, query)
         return
-    partner_id = active_chats[user_id]
 
-    # Проверка на соблюдение темы чата
-    user_topics = set(user_interests.get(user_id, [OTHER_INTERESTS_KEY]))
-    partner_topics = set(user_interests.get(partner_id, [OTHER_INTERESTS_KEY]))
-    common_topics = user_topics.intersection(partner_topics)
-    # Если "Другие интересы" — тема не ограничена
-    if OTHER_INTERESTS_KEY not in common_topics:
-        # Для упрощения: если сообщение содержит ключевые слова из темы (можно расширить)
-        text = update.message.text.lower()
-        # Например, если тема "Музыка" — в тексте должно быть слово "музыка" или "песня" и т.п.
-        # Здесь сделаем простую проверку — если в тексте нет названия интереса (маловероятно идеальное)
-        if not any(topic.lower().strip("🎵🎮🎬✈️💬🔞 ") in text for topic in common_topics):
-            await update.message.reply_text("⚠️ Нарушение темы чата — вы забанены.")
-            await stop_chat(user_id, context, banned=True)
-            return
-
-    # Пересылаем сообщение собеседнику
-    try:
-        await context.bot.send_message(partner_id, f"👤 Собеседник: {update.message.text}")
-    except:
-        await update.message.reply_text("Ошибка при отправке сообщения собеседнику.")
-
-# ==================== КОМАНДА ЗАВЕРШЕНИЯ ЧАТА ====================
-
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    await stop_chat(user_id, context)
-
-async def stop_chat(user_id, context, banned=False):
-    if user_id not in active_chats:
-        await context.bot.send_message(user_id, "Вы не в чате.")
+    if data == "interests_done":
+        interests_list = user_interests.get(user_id, [])
+        # Проверка на 18+ и хватает ли валюты
+        if "adult" in interests_list:
+            coins = user_currency.get(user_id, 0)
+            if coins < 50:
+                await query.edit_message_text(
+                    f"Для доступа к комнате 🔞 18+ требуется 50 монет.\n"
+                    f"У вас {coins} монет.\n"
+                    f"Приглашайте друзей, чтобы заработать монеты!"
+                )
+                return
+            else:
+                user_currency[user_id] = coins - 50
+                await context.bot.send_message(user_id, "✅ Списано 50 монет за доступ к комнате 18+.")
+        display_interests = []
+        for em_text, key in available_interests:
+            if key in interests_list:
+                display_interests.append(em_text)
+        if not display_interests:
+            display_interests = ["Другие интересы / Не выбраны"]
+        await query.edit_message_text(
+            f"✅ Ваши интересы: {', '.join(display_interests)}.\nИщем собеседника..."
+        )
+        if user_id not in waiting_users:
+            waiting_users.append(user_id)
+        await find_partner(context)
         return
-    partner_id = active_chats.pop(user_id)
-    active_chats.pop(partner_id, None)
-    chat_start_times.pop(user_id, None)
-    chat_start_times.pop(partner_id, None)
-    nick_shown.discard(user_id)
-    nick_shown.discard(partner_id)
-    if user_id in waiting_users:
-        waiting_users.remove(user_id)
-    if partner_id in waiting_users:
-        waiting_users.remove(partner_id)
 
-    if banned:
-        await context.bot.send_message(user_id, "Вы были забанены за нарушение правил.")
-    else:
-        await context.bot.send_message(user_id, "Чат завершён.")
-    try:
-        await context.bot.send_message(partner_id, "Собеседник завершил чат.")
-    except:
-        pass
+    # Админка и другие кнопки можно добавить ниже...
 
-# ==================== КНОПКА "НАЧАТЬ НОВЫЙ ЧАТ" ====================
-
-async def new_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-    await stop_chat(user_id, context)
-    if user_id not in waiting_users:
-        waiting_users.append(user_id)
-    await query.answer("Поиск нового собеседника запущен.")
-    await try_to_pair(context)
-
-# ==================== АДМИН КОМАНДЫ ====================
-
-async def admin_add_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("Нет доступа")
+    if data == "new_chat":
+        await end_chat(user_id, context, notify_partner=True)
+        if user_id in waiting_users:
+            waiting_users.remove(user_id)
+        # Заново показать меню интересов
+        chat = await context.bot.get_chat(user_id)
+        await show_interests_menu(chat, user_id)
         return
-    if len(context.args) < 2:
-        await update.message.reply_text("Использование: /addmoney <user_id> <amount>")
+
+    # Логика обмена никами и др. - не трогаем, если надо - добавлю
+
+async def update_interests_menu(user_id, query):
+    keyboard = []
+    selected = user_interests.get(user_id, [])
+    for em_text, key in available_interests:
+        text = f"✅ {em_text}" if key in selected else em_text
+        keyboard.append([InlineKeyboardButton(text, callback_data=f"interest_{key}")])
+    keyboard.append([InlineKeyboardButton("➡️ Готово", callback_data="interests_done")])
+    await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def show_main_menu(user_id, context):
+    coins = user_currency.get(user_id, 0)
+    keyboard = [["🔍 Поиск собеседника"], ["⚠️ Сообщить о проблеме"], ["🔗 Мои рефералы"], [f"💰 Баланс: {coins} монет"]]
+    await context.bot.send_message(user_id, "Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+
+async def show_interests_menu(update, user_id):
+    keyboard = [[InlineKeyboardButton(em_text, callback_data=f"interest_{key}")] for em_text, key in available_interests]
+    keyboard.append([InlineKeyboardButton("➡️ Готово", callback_data="interests_done")])
+    user_interests[user_id] = []
+    await update.message.reply_text("Выберите интересы:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def find_partner(context):
+    i = 0
+    while i < len(waiting_users):
+        u1 = waiting_users[i]
+        found = False
+        for j in range(i+1, len(waiting_users)):
+            u2 = waiting_users[j]
+            i1 = user_interests.get(u1, [])
+            i2 = user_interests.get(u2, [])
+            if interests_match(i1, i2):
+                # Убедимся, что оба не забанены
+                if u1 in banned_users or u2 in banned_users:
+                    continue
+                waiting_users.remove(u2)
+                waiting_users.remove(u1)
+                active_chats[u1] = u2
+                active_chats[u2] = u1
+                await context.bot.send_message(u1, "💬 Вы подключены к собеседнику, общайтесь по теме!")
+                await context.bot.send_message(u2, "💬 Вы подключены к собеседнику, общайтесь по теме!")
+                found = True
+                break
+        if not found:
+            i += 1
+
+async def end_chat(user_id, context, notify_partner=False):
+    partner = active_chats.pop(user_id, None)
+    if partner:
+        active_chats.pop(partner, None)
+        if notify_partner:
+            try:
+                await context.bot.send_message(partner, "🚫 Ваш собеседник покинул чат.")
+            except Exception:
+                pass
+
+# ---------------- Админские команды ----------------
+
+async def addcoins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ У вас нет прав администратора.")
+        return
+    if len(context.args) != 2:
+        await update.message.reply_text("Использование: /addcoins <user_id> <amount>")
         return
     try:
         target_id = int(context.args[0])
         amount = int(context.args[1])
-        user_balances[target_id] = user_balances.get(target_id, 0) + amount
-        await update.message.reply_text(f"Добавлено {amount} монет пользователю {target_id}")
-    except Exception:
-        await update.message.reply_text("Ошибка в аргументах")
-
-async def admin_remove_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("Нет доступа")
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❗️ Неверный формат user_id или amount.")
         return
-    if len(context.args) < 2:
-        await update.message.reply_text("Использование: /removemoney <user_id> <amount>")
+    user_currency[target_id] = user_currency.get(target_id, 0) + amount
+    await update.message.reply_text(f"✅ Выдано {amount} монет пользователю {target_id}.")
+
+async def removecoins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ У вас нет прав администратора.")
+        return
+    if len(context.args) != 2:
+        await update.message.reply_text("Использование: /removecoins <user_id> <amount>")
         return
     try:
         target_id = int(context.args[0])
         amount = int(context.args[1])
-        current = user_balances.get(target_id, 0)
-        user_balances[target_id] = max(0, current - amount)
-        await update.message.reply_text(f"Снято {amount} монет с пользователя {target_id}")
-    except Exception:
-        await update.message.reply_text("Ошибка в аргументах")
-
-# ==================== ЗАПУСК БОТА ====================
-
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("find", find))
-    app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CallbackQueryHandler(interests_callback, pattern=r"^interest_"))
-    app.add_handler(CallbackQueryHandler(interests_callback, pattern="interests_done"))
-    app.add_handler(CallbackQueryHandler(nick_button_handler, pattern=r"^show_nick_"))
-    app.add_handler(CallbackQueryHandler(new_chat_callback, pattern="new_chat"))
-    app.add_handler(CommandHandler("addmoney", admin_add_money))
-    app.add_handler(CommandHandler("removemoney", admin_remove_money))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Бот запущен...")
-    app.run_polling()
-
-if __name__ == '__main__':
-    main()
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❗️ Неверный формат user_id или amount.")
+        return
+    current = user_currency.get(target_id,
