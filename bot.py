@@ -40,7 +40,7 @@ invited_by = {}
 user_balance = {}
 unlocked_18plus = set()
 warnings = {}
-chat_history = {}
+chat_history = {} # Новый словарь для хранения истории чатов
 
 # Обновленный список интересов с эмодзи
 available_interests = {
@@ -112,9 +112,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Недостаточно валюты для разблокировки. Необходимо {COST_FOR_UNBAN}. Ваш баланс: {user_balance.get(user_id, 0)}.")
         return
     
-    if user_id in banned_users:
-        return
-
     if data == "agree":
         user_agreements[user_id] = True
         await show_main_menu(user_id, context)
@@ -246,7 +243,7 @@ async def show_main_menu(user_id, context):
     """
     Отправляет главное меню пользователю.
     """
-    keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["⚠️ Пожаловаться"], ["🔗 Мои рефералы"]]
+    keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["🔗 Мои рефералы"]]
     await context.bot.send_message(user_id, "Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
 # ====== ПОИСК СОБЕСЕДНИКА ======
@@ -289,7 +286,7 @@ async def start_chat(context, u1, u2):
     active_chats[u2] = u1
     
     markup = ReplyKeyboardMarkup(
-        [["🚫 Завершить чат"], ["🔍 Начать новый чат"]],
+        [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"]],
         resize_keyboard=True
     )
     
@@ -366,7 +363,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
-    if user_id in banned_users:
+    # Если пользователь забанен, разрешаем только кнопки, не связанные с чатом
+    if user_id in banned_users and text not in ["💰 Мой баланс", "🔗 Мои рефералы"]:
+        await update.message.reply_text("❌ Вы заблокированы и не можете отправлять сообщения в чат или пользоваться некоторыми функциями.")
         return
 
     # Обработка админ-команд
@@ -425,17 +424,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🔍 Поиск собеседника":
         await show_interests_menu(update, user_id)
     elif text == "⚠️ Пожаловаться":
-        if user_id not in active_chats:
+        # Если пользователь в чате, обрабатываем жалобу
+        if user_id in active_chats:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Не по теме комнаты", callback_data="report_reason_off_topic")],
+                [InlineKeyboardButton("Оскорбления", callback_data="report_reason_insult")],
+                [InlineKeyboardButton("Неприемлемый контент", callback_data="report_reason_content")],
+                [InlineKeyboardButton("Разглашение личной информации", callback_data="report_reason_private_info")]
+            ])
+            await update.message.reply_text("Выберите причину жалобы:", reply_markup=keyboard)
+        else:
             await update.message.reply_text("❌ Вы не в чате и не можете отправить жалобу.")
-            return
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Не по теме комнаты", callback_data="report_reason_off_topic")],
-            [InlineKeyboardButton("Оскорбления", callback_data="report_reason_insult")],
-            [InlineKeyboardButton("Неприемлемый контент", callback_data="report_reason_content")],
-            [InlineKeyboardButton("Разглашение личной информации", callback_data="report_reason_private_info")]
-        ])
-        await update.message.reply_text("Выберите причину жалобы:", reply_markup=keyboard)
     elif text == "🔗 Мои рефералы":
         link = f"https://t.me/{context.bot.username}?start={user_id}"
         await update.message.reply_text(f"🔗 Ваша ссылка: {link}\n👥 Приглашено: {referrals.get(user_id, 0)}")
@@ -446,6 +445,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обработка команд из чата
     elif user_id in active_chats:
         partner_id = active_chats[user_id]
+        
+        # Если собеседник забанен, не обрабатываем сообщения и автоматически завершаем чат
+        if partner_id in banned_users:
+            await end_chat(user_id, context)
+            await context.bot.send_message(user_id, "❌ Чат завершён. Ваш собеседник был забанен.", reply_markup=ReplyKeyboardRemove())
+            await show_main_menu(user_id, context)
+            return
 
         if text == "🚫 Завершить чат":
             await end_chat(user_id, context)
@@ -453,10 +459,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await end_chat(user_id, context)
             await show_interests_menu(update, user_id)
         else:
-            if partner_id in banned_users:
-                await update.message.reply_text("❌ Ваш собеседник был забанен.")
-                return
-
             update_chat_history(user_id, partner_id, text)
             
             if re.search(r'@?\s*[A-Za-z0-9_]{5,}', text) or any(s in text.lower() for s in ['ник', 'username', 'telegram']):
@@ -470,6 +472,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(partner_id, "❌ Собеседник был забанен за нарушение правил.")
                     del chat_history[user_id]
                     del chat_history[partner_id]
+                    await show_main_menu(partner_id, context)
                 else:
                     await update.message.reply_text(f"⚠️ Предупреждение {warnings[user_id]}/{MAX_WARNINGS}: Нельзя разглашать личную информацию. Ещё {MAX_WARNINGS - warnings[user_id]} предупреждений до бана.")
             else:
@@ -487,7 +490,9 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in active_chats:
         partner = active_chats[user_id]
         if partner in banned_users:
-            await update.message.reply_text("❌ Ваш собеседник был забанен.")
+            await update.message.reply_text("❌ Ваш собеседник был забанен. Чат завершён.")
+            await end_chat(user_id, context)
+            await show_main_menu(user_id, context)
             return
 
         if update.message.photo:
