@@ -15,12 +15,14 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 if not TOKEN or not ADMIN_PASSWORD:
     raise ValueError("❌ Не задан TOKEN или ADMIN_PASSWORD в переменных окружения Railway!")
 
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Инициализируем бота с использованием DefaultBotProperties для предотвращения DeprecationWarning
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# Инициализируем бота с MarkdownV2, чтобы избежать ошибок с разметкой
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
 dp = Dispatcher()
 
+# Словари для хранения данных о пользователях и чатах
 waiting_users = {}
 active_chats = {}
 user_data = {}
@@ -30,6 +32,7 @@ CHAT_DURATION = 600   # 10 минут
 
 
 async def start_search(user_id):
+    """Начинает поиск собеседника для пользователя."""
     waiting_users[user_id] = datetime.now()
     await bot.send_message(user_id, "🔍 Ищу собеседника...")
     await asyncio.sleep(SEARCH_TIMEOUT)
@@ -40,6 +43,7 @@ async def start_search(user_id):
 
 
 async def connect_users(user1, user2):
+    """Соединяет двух пользователей в чат."""
     active_chats[user1] = user2
     active_chats[user2] = user1
     waiting_users.pop(user1, None)
@@ -59,6 +63,7 @@ async def connect_users(user1, user2):
 
 
 async def stop_chat(user_id):
+    """Завершает чат для пользователя и его собеседника."""
     partner_id = active_chats.get(user_id)
     if partner_id:
         await bot.send_message(user_id, "⏹ Диалог завершён.")
@@ -69,13 +74,15 @@ async def stop_chat(user_id):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    """Обработчик команды /start."""
     user_data[message.from_user.id] = {"username": message.from_user.username}
-    await message.answer("👋 Привет! Нажми /search чтобы найти собеседника.\n"
-                         "Для входа в админ-панель используй /admin <пароль>.")
+    await message.answer("👋 Привет! Нажми /search, чтобы найти собеседника\\.\n"
+                         "Для входа в админ-панель используй /admin <пароль>\\.")
 
 
 @dp.message(Command("search"))
 async def cmd_search(message: types.Message):
+    """Обработчик команды /search."""
     uid = message.from_user.id
     if uid in waiting_users or uid in active_chats:
         return await message.answer("⏳ Вы уже ищете или общаетесь.")
@@ -88,11 +95,13 @@ async def cmd_search(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == "stop_chat")
 async def callback_stop_chat(call: types.CallbackQuery):
+    """Обработчик колбэка для завершения чата."""
     await stop_chat(call.from_user.id)
 
 
 @dp.callback_query(lambda c: c.data == "show_nick")
 async def callback_show_nick(call: types.CallbackQuery):
+    """Обработчик колбэка для показа ника собеседника."""
     partner_id = active_chats.get(call.from_user.id)
     if partner_id:
         partner_username = user_data.get(partner_id, {}).get("username", "—")
@@ -101,6 +110,7 @@ async def callback_show_nick(call: types.CallbackQuery):
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
+    """Обработчик команды /admin."""
     args = message.text.split()
     if len(args) != 2:
         return await message.answer("❌ Использование: /admin <пароль>")
@@ -116,6 +126,7 @@ async def cmd_admin(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == "admin_stats")
 async def admin_stats(call: types.CallbackQuery):
+    """Обработчик колбэка для показа статистики админ-панели."""
     total_users = len(user_data)
     active_pairs = len(active_chats) // 2
     await call.message.answer(f"📊 Пользователей всего: {total_users}\n"
@@ -124,6 +135,7 @@ async def admin_stats(call: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "admin_stop_all")
 async def admin_stop_all(call: types.CallbackQuery):
+    """Обработчик колбэка для завершения всех чатов."""
     for uid in list(active_chats.keys()):
         await stop_chat(uid)
     await call.message.answer("🚫 Все чаты завершены.")
@@ -131,14 +143,16 @@ async def admin_stop_all(call: types.CallbackQuery):
 
 @dp.message()
 async def relay_message(message: types.Message):
+    """Пересылает сообщение собеседнику в активном чате."""
     if message.from_user.id in active_chats:
         await bot.send_message(active_chats[message.from_user.id], message.text)
 
-# Важно: новая основная асинхронная функция для запуска
+
 async def main() -> None:
-    # Удаляем вебхук перед запуском поллинга
+    """Основная асинхронная функция для запуска бота."""
+    # Удаляем вебхук перед запуском поллинга, чтобы избежать конфликта
     await bot.delete_webhook(drop_pending_updates=True)
-    # Запускаем поллинг
+    # Запускаем поллинг для получения обновлений
     await dp.start_polling(bot)
 
 
