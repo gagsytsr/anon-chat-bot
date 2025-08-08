@@ -40,7 +40,7 @@ invited_by = {}
 user_balance = {}
 unlocked_18plus = set()
 warnings = {}
-chat_history = {} # Новый словарь для хранения истории чатов
+chat_history = {}
 
 # Обновленный список интересов с эмодзи
 available_interests = {
@@ -160,12 +160,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_show_name_request(user_id, context, False)
 
     elif data == "report_chat":
-        # Исправлено: теперь это Inline-кнопка в чате.
+        # Логика для кнопки "Пожаловаться" в чате
         partner_id = active_chats.get(user_id)
         if not partner_id:
-            await query.message.reply_text("❌ Чат уже завершён.")
+            await query.message.reply_text("❌ Вы не в чате и не можете отправить жалобу.")
             return
-            
+
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Не по теме комнаты", callback_data="report_reason_off_topic")],
             [InlineKeyboardButton("Оскорбления", callback_data="report_reason_insult")],
@@ -178,14 +178,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reason = data.replace("report_reason_", "")
         partner_id = active_chats.get(user_id)
         if not partner_id:
-            await query.message.reply_text("❌ Чат уже завершён.")
+            await query.message.reply_text("❌ Чат уже завершён или не существует.")
             return
 
         report_text = f"❗ **Жалоба**\n" \
                       f"От пользователя: `{user_id}`\n" \
                       f"На пользователя: `{partner_id}`\n" \
                       f"Причина: `{reason}`\n\n" \
-                      f"**История чата:**\n{chat_history.get(user_id, '')}"
+                      f"**История чата:**\n{chat_history.get(user_id, 'История чата не найдена.')}"
         
         for admin_id in ADMIN_IDS:
             await context.bot.send_message(admin_id, report_text, parse_mode='Markdown')
@@ -246,7 +246,7 @@ async def show_main_menu(user_id, context):
     """
     Отправляет главное меню пользователю.
     """
-    keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["⚠️ Сообщить о проблеме"], ["🔗 Мои рефералы"]]
+    keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["⚠️ Пожаловаться"], ["🔗 Мои рефералы"]]
     await context.bot.send_message(user_id, "Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
 # ====== ПОИСК СОБЕСЕДНИКА ======
@@ -288,20 +288,13 @@ async def start_chat(context, u1, u2):
     active_chats[u1] = u2
     active_chats[u2] = u1
     
-    # Исправлено: "Пожаловаться" теперь Inline-кнопка
     markup = ReplyKeyboardMarkup(
-        [["🚫 Завершить чат", "🔍 Начать новый чат"]],
+        [["🚫 Завершить чат"], ["🔍 Начать новый чат"]],
         resize_keyboard=True
     )
-    report_keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("⚠️ Пожаловаться", callback_data="report_chat")]]
-    )
-
+    
     await context.bot.send_message(u1, "🎉 Собеседник найден! У вас есть 10 минут, чтобы решить, хотите ли вы обменяться никами.", reply_markup=markup)
-    await context.bot.send_message(u1, " ", reply_markup=report_keyboard) # Пустое сообщение с кнопкой жалобы
     await context.bot.send_message(u2, "🎉 Собеседник найден! У вас есть 10 минут, чтобы решить, хотите ли вы обменяться никами.", reply_markup=markup)
-    await context.bot.send_message(u2, " ", reply_markup=report_keyboard) # Пустое сообщение с кнопкой жалобы
-
     
     context.job_queue.run_once(ask_to_show_name, 600, chat_id=u1, context={"u1": u1, "u2": u2})
 
@@ -366,56 +359,6 @@ async def handle_show_name_request(user_id, context, agreement):
         del show_name_requests[pair_key]
 
 # ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
-# Новый обработчик для кнопок в чате
-async def chat_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    
-    # Обрабатываем кнопки, если пользователь в чате
-    if user_id in active_chats:
-        if text == "🚫 Завершить чат":
-            await end_chat(user_id, context)
-        elif text == "🔍 Начать новый чат":
-            await end_chat(user_id, context)
-            await show_interests_menu(update, user_id)
-        else:
-            # Если это не кнопка, отправляем как обычное сообщение
-            await send_message_to_partner(update, context)
-    else:
-        # Если не в чате, обрабатываем обычные сообщения
-        await message_handler(update, context)
-
-# Отдельная функция для обработки текстовых сообщений
-async def send_message_to_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    partner_id = active_chats.get(user_id)
-    if not partner_id:
-        return
-    
-    # Обновление истории чата
-    update_chat_history(user_id, partner_id, text)
-    
-    # Проверка на упоминание ника
-    if re.search(r'@?\s*[A-Za-z0-9_]{5,}', text) or any(s in text.lower() for s in ['ник', 'username', 'telegram']):
-        warnings[user_id] = warnings.get(user_id, 0) + 1
-        if warnings[user_id] >= MAX_WARNINGS:
-            banned_users.add(user_id)
-            del active_chats[partner_id]
-            del active_chats[user_id]
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]])
-            await update.message.reply_text(f"❌ Вы были забанены за многократные попытки разгласить личную информацию. Чтобы разблокироваться, оплатите {COST_FOR_UNBAN} валюты.", reply_markup=keyboard)
-            await context.bot.send_message(partner_id, "❌ Собеседник был забанен за нарушение правил.")
-            # Очистка истории чата после бана
-            del chat_history[user_id]
-            del chat_history[partner_id]
-        else:
-            await update.message.reply_text(f"⚠️ Предупреждение {warnings[user_id]}/{MAX_WARNINGS}: Нельзя разглашать личную информацию. Ещё {MAX_WARNINGS - warnings[user_id]} предупреждений до бана.")
-    else:
-        await context.bot.send_message(partner_id, text)
-
-
-# Основной обработчик текстовых сообщений
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает текстовые сообщения и команды.
@@ -481,10 +424,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обработка команд из главного меню
     if text == "🔍 Поиск собеседника":
         await show_interests_menu(update, user_id)
-    elif text == "⚠️ Сообщить о проблеме":
-        await update.message.reply_text("⚠️ Жалоба отправлена админам.")
-        for admin in ADMIN_IDS:
-            await context.bot.send_message(admin, f"❗ Жалоба от {user_id}")
+    elif text == "⚠️ Пожаловаться":
+        if user_id not in active_chats:
+            await update.message.reply_text("❌ Вы не в чате и не можете отправить жалобу.")
+            return
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Не по теме комнаты", callback_data="report_reason_off_topic")],
+            [InlineKeyboardButton("Оскорбления", callback_data="report_reason_insult")],
+            [InlineKeyboardButton("Неприемлемый контент", callback_data="report_reason_content")],
+            [InlineKeyboardButton("Разглашение личной информации", callback_data="report_reason_private_info")]
+        ])
+        await update.message.reply_text("Выберите причину жалобы:", reply_markup=keyboard)
     elif text == "🔗 Мои рефералы":
         link = f"https://t.me/{context.bot.username}?start={user_id}"
         await update.message.reply_text(f"🔗 Ваша ссылка: {link}\n👥 Приглашено: {referrals.get(user_id, 0)}")
@@ -492,6 +443,37 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         balance = user_balance.get(user_id, 0)
         await update.message.reply_text(f"💰 Ваш текущий баланс: {balance}")
 
+    # Обработка команд из чата
+    elif user_id in active_chats:
+        partner_id = active_chats[user_id]
+
+        if text == "🚫 Завершить чат":
+            await end_chat(user_id, context)
+        elif text == "🔍 Начать новый чат":
+            await end_chat(user_id, context)
+            await show_interests_menu(update, user_id)
+        else:
+            if partner_id in banned_users:
+                await update.message.reply_text("❌ Ваш собеседник был забанен.")
+                return
+
+            update_chat_history(user_id, partner_id, text)
+            
+            if re.search(r'@?\s*[A-Za-z0-9_]{5,}', text) or any(s in text.lower() for s in ['ник', 'username', 'telegram']):
+                warnings[user_id] = warnings.get(user_id, 0) + 1
+                if warnings[user_id] >= MAX_WARNINGS:
+                    banned_users.add(user_id)
+                    del active_chats[partner_id]
+                    del active_chats[user_id]
+                    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]])
+                    await update.message.reply_text(f"❌ Вы были забанены за многократные попытки разгласить личную информацию. Чтобы разблокироваться, оплатите {COST_FOR_UNBAN} валюты.", reply_markup=keyboard)
+                    await context.bot.send_message(partner_id, "❌ Собеседник был забанен за нарушение правил.")
+                    del chat_history[user_id]
+                    del chat_history[partner_id]
+                else:
+                    await update.message.reply_text(f"⚠️ Предупреждение {warnings[user_id]}/{MAX_WARNINGS}: Нельзя разглашать личную информацию. Ещё {MAX_WARNINGS - warnings[user_id]} предупреждений до бана.")
+            else:
+                await context.bot.send_message(partner_id, text)
 
 # ====== ОБРАБОТЧИК МЕДИА ======
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -504,7 +486,10 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user_id in active_chats:
         partner = active_chats[user_id]
-        
+        if partner in banned_users:
+            await update.message.reply_text("❌ Ваш собеседник был забанен.")
+            return
+
         if update.message.photo:
             if user_balance.get(user_id, 0) >= COST_FOR_PHOTO:
                 user_balance[user_id] -= COST_FOR_PHOTO
@@ -560,7 +545,6 @@ async def end_chat(user_id, context):
         await context.bot.send_message(user_id, "❌ Чат завершён.", reply_markup=ReplyKeyboardRemove())
         await context.bot.send_message(partner, "❌ Собеседник вышел.", reply_markup=ReplyKeyboardRemove())
         
-        # Очистка истории чата
         if user_id in chat_history:
             del chat_history[user_id]
         if partner in chat_history:
@@ -576,15 +560,10 @@ async def main():
     """
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    
-    # Исправлено: Обработчик текстовых сообщений
-    # Теперь мы различаем, находится ли пользователь в чате или нет
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, chat_button_handler))
-    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VOICE, media_handler))
 
     await app.initialize()
