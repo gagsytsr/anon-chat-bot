@@ -18,8 +18,7 @@ if not TOKEN or not ADMIN_PASSWORD:
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Инициализируем бота с новым синтаксисом для устранения DeprecationWarning
-# и используем MarkdownV2 для корректной обработки текста
+# Инициализируем бота с новым синтаксисом и MarkdownV2
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
 dp = Dispatcher()
 
@@ -55,8 +54,8 @@ async def connect_users(user1, user2):
         [InlineKeyboardButton(text="❌ Завершить", callback_data="stop_chat")]
     ])
 
-    await bot.send_message(user1, "✅ Собеседник найден! Можете начинать общение.", reply_markup=kb)
-    await bot.send_message(user2, "✅ Собеседник найден! Можете начинать общение.", reply_markup=kb)
+    await bot.send_message(user1, "✅ Собеседник найден\\! Можете начинать общение.", reply_markup=kb)
+    await bot.send_message(user2, "✅ Собеседник найден\\! Можете начинать общение.", reply_markup=kb)
 
     await asyncio.sleep(CHAT_DURATION)
     if user1 in active_chats and user2 in active_chats:
@@ -77,8 +76,10 @@ async def stop_chat(user_id):
 async def cmd_start(message: types.Message):
     """Обработчик команды /start."""
     user_data[message.from_user.id] = {"username": message.from_user.username}
-    await message.answer("👋 Привет! Нажми /search, чтобы найти собеседника\\.\n"
-                         "Для входа в админ-панель используй /admin <пароль>\\.")
+    await message.answer(
+        "👋 Привет\\! Нажми /search, чтобы найти собеседника\\.\\n"
+        "Для входа в админ\\-панель используй /admin \\<пароль\\>\\."
+    )
 
 
 @dp.message(Command("search"))
@@ -122,7 +123,7 @@ async def cmd_admin(message: types.Message):
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🚫 Завершить все чаты", callback_data="admin_stop_all")]
     ])
-    await message.answer("🔐 Админ-панель", reply_markup=kb)
+    await message.answer("🔐 Админ\\-панель", reply_markup=kb)
 
 
 @dp.callback_query(lambda c: c.data == "admin_stats")
