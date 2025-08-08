@@ -18,7 +18,8 @@ if not TOKEN or not ADMIN_PASSWORD:
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Инициализируем бота с MarkdownV2, чтобы избежать ошибок с разметкой
+# Инициализируем бота с новым синтаксисом для устранения DeprecationWarning
+# и используем MarkdownV2 для корректной обработки текста
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
 dp = Dispatcher()
 
