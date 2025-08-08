@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 # Загружаем переменные окружения
 TOKEN = os.getenv("TOKEN")
@@ -16,7 +17,8 @@ if not TOKEN or not ADMIN_PASSWORD:
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+# Инициализируем бота с использованием DefaultBotProperties для предотвращения DeprecationWarning
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 waiting_users = {}
@@ -132,7 +134,13 @@ async def relay_message(message: types.Message):
     if message.from_user.id in active_chats:
         await bot.send_message(active_chats[message.from_user.id], message.text)
 
+# Важно: новая основная асинхронная функция для запуска
+async def main() -> None:
+    # Удаляем вебхук перед запуском поллинга
+    await bot.delete_webhook(drop_pending_updates=True)
+    # Запускаем поллинг
+    await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(dp.start_polling(bot))
+    asyncio.run(main())
