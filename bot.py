@@ -36,8 +36,9 @@ search_timeouts = {}
 user_interests = {}
 referrals = {}
 invited_by = {}
-# Новый словарь для хранения баланса пользователей
 user_balance = {}
+# Новый список для пользователей, которые разблокировали чат 18+
+unlocked_18plus = set()
 
 # Обновленный список интересов с эмодзи
 available_interests = {
@@ -48,6 +49,7 @@ available_interests = {
 # ===== КОНСТАНТЫ =====
 REWARD_FOR_REFERRAL = 10
 COST_FOR_18PLUS = 50
+COST_FOR_UNBAN = 100
 
 # ====== СТАРТ ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,11 +57,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Обработчик команды /start.
     """
     user_id = update.effective_user.id
+
     if user_id in banned_users:
-        await update.message.reply_text("❌ Вы заблокированы.")
+        # Если пользователь забанен, показываем ему только кнопку для разблокировки
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]])
+        await update.message.reply_text("❌ Вы заблокированы. Чтобы получить доступ к боту, вы должны разблокировать себя.", reply_markup=keyboard)
         return
 
-    # Инициализируем баланс для нового пользователя
+    # Инициализируем баланс для нового пользователя, если его ещё нет
     if user_id not in user_balance:
         user_balance[user_id] = 0
 
@@ -70,7 +75,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if referrer_id != user_id and user_id not in invited_by:
                 referrals[referrer_id] = referrals.get(referrer_id, 0) + 1
                 invited_by[user_id] = referrer_id
-                # Начисляем валюту рефереру
                 user_balance[referrer_id] = user_balance.get(referrer_id, 0) + REWARD_FOR_REFERRAL
                 await context.bot.send_message(referrer_id, f"🎉 Новый пользователь по вашей ссылке! Вам начислено {REWARD_FOR_REFERRAL} валюты.")
         except (ValueError, IndexError):
@@ -97,6 +101,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     await query.answer()
 
+    # Обработка запроса на разбан
+    if data == "unban_request":
+        if user_balance.get(user_id, 0) >= COST_FOR_UNBAN:
+            user_balance[user_id] -= COST_FOR_UNBAN
+            banned_users.discard(user_id)
+            await query.edit_message_text(f"✅ Вы успешно разблокированы за {COST_FOR_UNBAN} валюты. Ваш текущий баланс: {user_balance.get(user_id, 0)}.")
+            await show_main_menu(user_id, context)
+        else:
+            await query.edit_message_text(f"❌ Недостаточно валюты для разблокировки. Необходимо {COST_FOR_UNBAN}. Ваш баланс: {user_balance.get(user_id, 0)}.")
+        return
+    
+    # Защита от использования кнопок, если пользователь забанен
+    if user_id in banned_users:
+        return
+
     if data == "agree":
         user_agreements[user_id] = True
         await show_main_menu(user_id, context)
@@ -114,15 +133,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_interests = user_interests.get(user_id, [])
         interest_names = [name for name, _ in available_interests.items() if name in selected_interests]
 
-        # Проверяем, если выбран чат 18+, и у пользователя не хватает валюты
-        if "18+" in selected_interests and user_balance.get(user_id, 0) < COST_FOR_18PLUS:
-            await query.edit_message_text(f"❌ Недостаточно валюты для чата 18+ (необходимо {COST_FOR_18PLUS}). Ваш баланс: {user_balance.get(user_id, 0)}.")
-            user_interests[user_id].remove("18+")
-            return
-
-        await query.edit_message_text(
-            f"✅ Ваши интересы: {', '.join(interest_names) or 'Не выбраны'}.\nИщем собеседника..."
-        )
+        # Логика для одноразовой покупки 18+
+        if "18+" in selected_interests and user_id not in unlocked_18plus:
+            if user_balance.get(user_id, 0) >= COST_FOR_18PLUS:
+                user_balance[user_id] -= COST_FOR_18PLUS
+                unlocked_18plus.add(user_id)
+                await query.edit_message_text(
+                    f"✅ Вы разблокировали чат 18+ за {COST_FOR_18PLUS} валюты. Теперь он доступен навсегда!\n"
+                    f"Ваши интересы: {', '.join(interest_names) or 'Не выбраны'}.\nИщем собеседника..."
+                )
+            else:
+                await query.edit_message_text(
+                    f"❌ Недостаточно валюты для разблокировки чата 18+ (необходимо {COST_FOR_18PLUS}). Ваш баланс: {user_balance.get(user_id, 0)}."
+                )
+                user_interests[user_id].remove("18+")
+                return
+        else:
+             await query.edit_message_text(
+                f"✅ Ваши интересы: {', '.join(interest_names) or 'Не выбраны'}.\nИщем собеседника..."
+            )
+        
         await find_partner(context, user_id)
 
     elif data == "show_name_yes":
@@ -184,7 +214,6 @@ async def show_main_menu(user_id, context):
     """
     Отправляет главное меню пользователю.
     """
-    # Добавляем кнопку "Мой баланс"
     keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["⚠️ Сообщить о проблеме"], ["🔗 Мои рефералы"]]
     await context.bot.send_message(user_id, "Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
@@ -204,19 +233,13 @@ async def find_partner(context, user_id):
     """
     user_interests_set = set(user_interests.get(user_id, []))
     
-    # Сначала проверяем, есть ли уже кто-то в очереди с совпадающими интересами
     for waiting_user_id in list(waiting_users):
         waiting_user_interests_set = set(user_interests.get(waiting_user_id, []))
         if user_interests_set & waiting_user_interests_set:
             waiting_users.remove(waiting_user_id)
-            # Если выбран чат 18+, списываем валюту
-            if "18+" in user_interests_set:
-                user_balance[user_id] -= COST_FOR_18PLUS
-                user_balance[waiting_user_id] -= COST_FOR_18PLUS
             await start_chat(context, user_id, waiting_user_id)
             return
 
-    # Если совпадений нет, добавляем пользователя в очередь
     if user_id not in waiting_users:
         waiting_users.append(user_id)
         
@@ -295,6 +318,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     user_id = update.effective_user.id
     text = update.message.text
+    
+    # Проверка на бан в самом начале
+    if user_id in banned_users:
+        # Если пользователь забанен, игнорируем любые его сообщения, кроме команд
+        # и не даем ему возможности использовать кнопки
+        return
 
     # Обработка админ-команд
     if context.user_data.get("awaiting_admin_password"):
@@ -305,27 +334,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Неверный пароль.")
         context.user_data["awaiting_admin_password"] = False
         return
-
     if context.user_data.get("awaiting_ban_id"):
         try:
             target_id = int(text)
             banned_users.add(target_id)
             await update.message.reply_text(f"✅ Пользователь {target_id} забанен.")
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]])
+            await context.bot.send_message(target_id, "❌ Вы были заблокированы администратором. Чтобы получить доступ к боту, вы должны разблокировать себя.", reply_markup=keyboard)
         except ValueError:
             await update.message.reply_text("❌ Неверный ID.")
         context.user_data.pop("awaiting_ban_id")
         return
-
     if context.user_data.get("awaiting_unban_id"):
         try:
             target_id = int(text)
             banned_users.discard(target_id)
             await update.message.reply_text(f"✅ Пользователь {target_id} разбанен.")
+            await context.bot.send_message(target_id, "✅ Вы были разблокированы администратором.")
         except ValueError:
             await update.message.reply_text("❌ Неверный ID.")
         context.user_data.pop("awaiting_unban_id")
         return
-
     if context.user_data.get("awaiting_add_currency"):
         try:
             target_id, amount = map(int, text.split())
@@ -336,12 +365,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Неверный формат. Попробуйте еще раз.")
         context.user_data.pop("awaiting_add_currency")
         return
-
     if context.user_data.get("awaiting_remove_currency"):
         try:
             target_id, amount = map(int, text.split())
             user_balance[target_id] = user_balance.get(target_id, 0) - amount
-            user_balance[target_id] = max(0, user_balance[target_id]) # Баланс не может быть отрицательным
+            user_balance[target_id] = max(0, user_balance[target_id])
             await update.message.reply_text(f"✅ У пользователя {target_id} изъято {amount} валюты. Новый баланс: {user_balance[target_id]}.")
             await context.bot.send_message(target_id, f"⚠️ Администратор изъял у вас {amount} валюты. Ваш баланс: {user_balance[target_id]}.")
         except (ValueError, IndexError):
@@ -380,6 +408,9 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Обрабатывает отправку фото, видео и т.д.
     """
     user_id = update.effective_user.id
+    if user_id in banned_users:
+        return
+        
     if user_id in active_chats:
         partner = active_chats[user_id]
         if update.message.photo:
@@ -445,7 +476,8 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    # Обработчик сообщений для забаненных пользователей
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, message_handler))
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VOICE, media_handler))
 
     await app.initialize()
