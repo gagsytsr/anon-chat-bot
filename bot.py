@@ -1,155 +1,438 @@
-import os
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext.filters import BaseFilter
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
+import os
+import sys
+from collections import defaultdict
+import datetime
 
-TOKEN = os.getenv("TOKEN")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+# Настройка логирования для отладки
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-if not TOKEN or not ADMIN_PASSWORD:
-    raise ValueError("❌ Не задан TOKEN или ADMIN_PASSWORD в переменных окружения Railway!")
+# ========== ПЕРЕМЕННЫЕ ==========
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
+ADMIN_IDS = set()
 
-logging.basicConfig(level=logging.INFO)
+if not BOT_TOKEN or not ADMIN_PASSWORD:
+    logging.error("BOT_TOKEN или ADMIN_PASSWORD не установлены в переменных окружения. Бот не может быть запущен.")
+    sys.exit(1)
 
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
-dp = Dispatcher()
-
-waiting_users = {}
+waiting_users = {} # Словарь для хранения пользователей в ожидании и их интересов
 active_chats = {}
-user_data = {}
-nickname_requests = {}  # для отслеживания запросов на показ ника
+show_name_requests = {}
+user_agreements = {}
+banned_users = set()
+reported_users = {}
+search_timeouts = {}
 
-SEARCH_TIMEOUT = 120  # 2 минуты
-CHAT_DURATION = 600   # 10 минут
-NICKNAME_WAIT = 600   # 10 минут до возможности запроса ника
+available_interests = ["Музыка", "Игры", "Кино", "Путешествия", "Спорт", "Книги"]
+user_interests = defaultdict(list)
 
+referrals = {}
+invited_by = {}
 
-def escape_md(text: str) -> str:
-    escape_chars = r'\_*[]()~`>#+-=|{}.!'
-    return ''.join('\\' + c if c in escape_chars else c for c in text)
+# ========== ФИЛЬТРЫ ==========
+class NotAdminFilter(BaseFilter):
+    def filter(self, message):
+        return message.from_user.id not in ADMIN_IDS
 
+not_admin_filter = NotAdminFilter()
 
-async def start_search(user_id):
-    waiting_users[user_id] = datetime.now()
-    await bot.send_message(user_id, "🔍 Ищу собеседника...")
-    await asyncio.sleep(SEARCH_TIMEOUT)
+# ========== ОБРАБОТЧИК ОШИБОК ==========
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error(msg="Исключение при обработке обновления:", exc_info=context.error)
+    if update and update.effective_chat:
+        logging.error(f"Обновление {update} вызвало ошибку {context.error} в чате {update.effective_chat.id}")
 
+# ========== МЕНЮ ==========
+async def show_agree_menu(update: Update, user_id: int):
+    keyboard = [["✅ Согласен"]]
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    agreement_text = (
+        "👋 Добро пожаловать в анонимный чат!\n\n"
+        "⚠️ Перед использованием подтвердите согласие с правилами:\n"
+        "• Запрещено нарушать законы.\n"
+        "• Соблюдайте уважение.\n"
+        "• Администрация не несет ответственности за контент пользователей.\n\n"
+        "Нажмите 'Согласен' чтобы начать."
+    )
+    if update:
+        await update.message.reply_text(agreement_text, reply_markup=markup)
+    else:
+        await app.bot.send_message(user_id, agreement_text, reply_markup=markup)
+
+async def show_main_menu(update: Update, user_id: int):
+    keyboard = [["🔍 Поиск собеседника"], ["⚠️ Сообщить о проблеме"], ["🔗 Мои рефералы"]]
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    if update:
+        await update.message.reply_text("Выберите действие:", reply_markup=markup)
+    else:
+        await app.bot.send_message(user_id, "Выберите действие:", reply_markup=markup)
+
+async def show_interests_menu(update: Update, user_id: int):
+    keyboard = [[interest] for interest in available_interests]
+    keyboard.append(["➡️ Готово"])
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text(
+        "Выберите ваши интересы (можно несколько), чтобы найти более подходящего собеседника:",
+        reply_markup=markup
+    )
+
+async def show_search_menu(update: Update, user_id: int):
+    markup = ReplyKeyboardMarkup(
+        [["🚫 Отменить поиск"]],
+        resize_keyboard=True
+    )
+    await update.message.reply_text("⏳ Ищем собеседника...", reply_markup=markup)
+
+async def show_chat_menu(update: Update, user_id: int):
+    markup = ReplyKeyboardMarkup(
+        [["🚫 Завершить чат", "🔍 Начать новый чат"], ["👤 Показать мой ник", "🙈 Не показывать мой ник"]],
+        resize_keyboard=True
+    )
+    if update:
+        await update.message.reply_text("👤 Собеседник найден! Общайтесь.", reply_markup=markup)
+    else:
+        await app.bot.send_message(user_id, "👤 Собеседник найден! Общайтесь.", reply_markup=markup)
+
+# ========== АСИНХРОННЫЕ ЗАДАЧИ ==========
+async def search_timeout_task(user_id, timeout):
+    await asyncio.sleep(timeout)
     if user_id in waiting_users:
         del waiting_users[user_id]
-        await bot.send_message(user_id, "⏳ Поиск отменён — никого не нашлось.")
+        if user_id in search_timeouts:
+            del search_timeouts[user_id]
+        await app.bot.send_message(user_id, "⏳ Время поиска истекло. Попробуйте ещё раз.", reply_markup=ReplyKeyboardRemove())
+        await show_main_menu(None, user_id)
+
+async def find_partner(context):
+    if len(waiting_users) >= 2:
+        user1_id = list(waiting_users.keys())[0]
+        user2_id = list(waiting_users.keys())[1]
+
+        waiting_users.pop(user1_id, None)
+        waiting_users.pop(user2_id, None)
+
+        if user1_id in search_timeouts:
+            search_timeouts.pop(user1_id).cancel()
+        if user2_id in search_timeouts:
+            search_timeouts.pop(user2_id).cancel()
+            
+        active_chats[user1_id] = user2_id
+        active_chats[user2_id] = user1_id
+        show_name_requests[(user1_id, user2_id)] = {user1_id: None, user2_id: None}
+        
+        await show_chat_menu(None, user1_id)
+        await show_chat_menu(None, user2_id)
 
 
-async def connect_users(user1, user2):
-    active_chats[user1] = {"partner": user2, "start_time": datetime.now()}
-    active_chats[user2] = {"partner": user1, "start_time": datetime.now()}
-    waiting_users.pop(user1, None)
-    waiting_users.pop(user2, None)
-    nickname_requests[user1] = False
-    nickname_requests[user2] = False
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🙋‍♂️ Показать ник", callback_data="request_nick")],
-        [InlineKeyboardButton(text="❌ Завершить", callback_data="stop_chat")]
-    ])
-
-    await bot.send_message(user1, "✅ Собеседник найден! Можете начинать общение.", reply_markup=kb)
-    await bot.send_message(user2, "✅ Собеседник найден! Можете начинать общение.", reply_markup=kb)
-
-    await asyncio.sleep(CHAT_DURATION)
-    if user1 in active_chats and user2 in active_chats:
-        await stop_chat(user1)
-
-
-async def stop_chat(user_id):
-    if user_id not in active_chats:
-        return
-    partner_id = active_chats[user_id]["partner"]
-    await bot.send_message(user_id, "⏹ Диалог завершён.")
-    await bot.send_message(partner_id, "⏹ Диалог завершён.")
-    active_chats.pop(user_id, None)
-    active_chats.pop(partner_id, None)
-    nickname_requests.pop(user_id, None)
-    nickname_requests.pop(partner_id, None)
-
-
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    user_data[message.from_user.id] = {"username": message.from_user.username}
-    await message.answer("👋 Привет! Нажми /search, чтобы найти собеседника.")
-
-
-@dp.message(Command("search"))
-async def cmd_search(message: types.Message):
-    uid = message.from_user.id
-    if uid in waiting_users or uid in active_chats:
-        return await message.answer("⏳ Вы уже ищете или общаетесь.")
-    if waiting_users:
-        partner_id = list(waiting_users.keys())[0]
-        await connect_users(uid, partner_id)
-    else:
-        asyncio.create_task(start_search(uid))
-
-
-@dp.message(Command("cancel"))
-async def cmd_cancel(message: types.Message):
-    uid = message.from_user.id
-    if uid in waiting_users:
-        waiting_users.pop(uid, None)
-        await message.answer("❌ Поиск собеседника отменён.")
-    else:
-        await message.answer("ℹ️ Поиск не запущен или вы уже в чате.")
-
-
-@dp.callback_query(lambda c: c.data == "stop_chat")
-async def callback_stop_chat(call: types.CallbackQuery):
-    await stop_chat(call.from_user.id)
-
-
-@dp.callback_query(lambda c: c.data == "request_nick")
-async def callback_request_nick(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    if user_id not in active_chats:
-        await call.answer("❌ Вы не в чате.", show_alert=True)
+# ========== СТАРТ И ОБЩАЯ ЛОГИКА ==========
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in banned_users:
+        await update.message.reply_text("❌ Вы заблокированы и не можете использовать бота.")
         return
 
-    chat_info = active_chats[user_id]
-    partner_id = chat_info["partner"]
-    chat_start = chat_info["start_time"]
+    if context.args:
+        try:
+            referrer_id = int(context.args[0])
+            if referrer_id != user_id and user_id not in invited_by:
+                if referrer_id not in referrals:
+                    referrals[referrer_id] = 0
+                referrals[referrer_id] += 1
+                invited_by[user_id] = referrer_id
+                await context.bot.send_message(referrer_id, f"🎉 По вашей ссылке зарегистрировался новый пользователь!")
+                logging.info(f"User {user_id} was invited by {referrer_id}")
+        except (ValueError, IndexError):
+            logging.error("Неверный формат реферальной ссылки.")
 
-    if datetime.now() - chat_start < timedelta(seconds=NICKNAME_WAIT):
-        await call.answer("⏳ Ники можно показать только спустя 10 минут общения.", show_alert=True)
+    if user_agreements.get(user_id, False):
+        await update.message.reply_text("Вы уже согласились с правилами. Выберите действие.")
+        await show_main_menu(update, user_id)
+    else:
+        await show_agree_menu(update, user_id)
+
+async def referrals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    referral_count = referrals.get(user_id, 0)
+    referral_link = f"https://t.me/{context.bot.username}?start={user_id}"
+    await update.message.reply_text(
+        f"🔗 Ваша реферальная ссылка: `{referral_link}`\n"
+        f"👥 Приглашено друзей: `{referral_count}`",
+        parse_mode='Markdown'
+    )
+
+# ========== ПОИСК И ЧАТ ==========
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    if user_id in banned_users:
+        return
+    
+    if user_id in ADMIN_IDS:
+        await admin_menu_handler(update, context)
         return
 
-    # Запрос на показ ника отправлен
-    nickname_requests[user_id] = True
+    if context.user_data.get('awaiting_admin_password'):
+        await password_handler(update, context)
+        return
 
-    # Проверяем, согласен ли партнёр
-    if nickname_requests.get(partner_id):
-        partner_username = user_data.get(partner_id, {}).get("username", "—")
-        partner_username_escaped = escape_md(partner_username)
-        await bot.send_message(user_id, f"👤 Ник собеседника: @{partner_username_escaped}")
-        await bot.send_message(partner_id, f"👤 Ник собеседника: @{escape_md(user_data.get(user_id, {}).get('username', '—'))}")
-    else:
-        await call.answer("✅ Запрос на показ ника отправлен партнёру. Ожидайте согласия.", show_alert=True)
+    if text == "✅ Согласен" and not user_agreements.get(user_id, False):
+        user_agreements[user_id] = True
+        await update.message.reply_text("✅ Вы согласились с условиями. Теперь можете искать собеседника.")
+        await show_main_menu(update, user_id)
+        return
 
+    if not user_agreements.get(user_id, False):
+        await update.message.reply_text("❗️Сначала примите условия, используя /start.")
+        return
 
-@dp.message()
-async def relay_message(message: types.Message):
-    user_id = message.from_user.id
+    if text == "🔍 Поиск собеседника":
+        if user_id in waiting_users or user_id in active_chats:
+            await update.message.reply_text("⏳ Поиск уже идёт или вы в чате.")
+            return
+        await show_interests_menu(update, user_id)
+        return
+
+    if text in available_interests:
+        if user_id in active_chats: # Если в чате, то не выбираем интересы
+            await context.bot.send_message(active_chats[user_id], text)
+        else:
+            user_interests[user_id].append(text)
+            await update.message.reply_text(f"Вы выбрали интерес: {text}.")
+        return
+
+    if text == "➡️ Готово":
+        if user_id in active_chats:
+             await context.bot.send_message(active_chats[user_id], text)
+        else:
+            await update.message.reply_text(f"✅ Ваши интересы: {', '.join(user_interests.get(user_id, [])) or 'Не выбраны'}.\nИщем собеседника...")
+            waiting_users[user_id] = user_interests.get(user_id, [])
+            await show_search_menu(update, user_id)
+            search_timeouts[user_id] = asyncio.create_task(search_timeout_task(user_id, 120))
+            await find_partner(context)
+        return
+
     if user_id in active_chats:
-        partner_id = active_chats[user_id]["partner"]
-        await bot.send_message(partner_id, message.text)
+        partner_id = active_chats[user_id]
+        if text:
+            await context.bot.send_message(partner_id, text)
+            return
+        
+    if text == "🚫 Отменить поиск":
+        if user_id in waiting_users:
+            waiting_users.pop(user_id, None)
+            timeout_task = search_timeouts.pop(user_id, None)
+            if timeout_task:
+                timeout_task.cancel()
+            await update.message.reply_text("✅ Поиск отменен.", reply_markup=ReplyKeyboardRemove())
+            await show_main_menu(update, user_id)
+        else:
+            await update.message.reply_text("❗️Вы не находитесь в поиске.")
+        return
+
+    elif text == "⚠️ Сообщить о проблеме":
+        if user_id in active_chats:
+            partner_id = active_chats[user_id]
+            reported_users[user_id] = partner_id
+            await update.message.reply_text("⚠️ Спасибо за сообщение! Администрация проверит ситуацию.")
+            for admin_id in ADMIN_IDS:
+                await context.bot.send_message(
+                    admin_id,
+                    f"❗ **Новая жалоба!**\n"
+                    f"Пожаловался: `{user_id}` (ник: @{update.effective_user.username})\n"
+                    f"На пользователя: `{partner_id}`",
+                    parse_mode='Markdown'
+                )
+        else:
+            await update.message.reply_text("❗️ Вы не находитесь в чате, чтобы подать жалобу.")
+        return
+            
+    elif text == "🚫 Завершить чат":
+        await end_chat(update, context)
+        return
+        
+    elif text == "👤 Показать мой ник":
+        await handle_show_name_request(update, context, agree=True)
+        return
+    elif text == "🙈 Не показывать мой ник":
+        await handle_show_name_request(update, context, agree=False)
+        return
+    elif text == "🔗 Мои рефералы":
+        await referrals_command(update, context)
+        return
+    elif text == "🔍 Начать новый чат":
+        await end_chat(update, context)
+        return
+    elif text:
+        await update.message.reply_text("❓ Неизвестная команда.")
 
 
-async def main() -> None:
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in active_chats:
+        partner_id = active_chats[user_id]
+        
+        if update.message.photo:
+            await context.bot.send_photo(partner_id, photo=update.message.photo[-1].file_id, caption=update.message.caption)
+        elif update.message.video:
+            await context.bot.send_video(partner_id, video=update.message.video.file_id, caption=update.message.caption)
+        elif update.message.voice:
+            await context.bot.send_voice(partner_id, voice=update.message.voice.file_id, caption=update.message.caption)
+        elif update.message.sticker:
+            await context.bot.send_sticker(partner_id, sticker=update.message.sticker.file_id)
 
+async def handle_show_name_request(update: Update, context: ContextTypes.DEFAULT_TYPE, agree: bool):
+    user_id = update.effective_user.id
+    if user_id not in active_chats:
+        await update.message.reply_text("❗️Вы сейчас не в чате.")
+        return
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    partner_id = active_chats[user_id]
+    chat_key = tuple(sorted((user_id, partner_id)))
+
+    if chat_key not in show_name_requests:
+        await update.message.reply_text("❗️Ошибка запроса.")
+        return
+
+    show_name_requests[chat_key][user_id] = agree
+    other_agree = show_name_requests[chat_key][partner_id]
+
+    if other_agree is None:
+        await update.message.reply_text("⏳ Ожидаем решение собеседника.")
+    elif agree and other_agree:
+        name1 = f"@{(await context.bot.get_chat(user_id)).username or 'Без ника'}"
+        name2 = f"@{(await context.bot.get_chat(partner_id)).username or 'Без ника'}"
+        await update.message.reply_text(f"🔓 Ник собеседника: {name2}")
+        await context.bot.send_message(partner_id, f"🔓 Ник собеседника: {name1}")
+    else:
+        await update.message.reply_text("❌ Кто-то из вас отказался показывать ник.")
+        await context.bot.send_message(partner_id, "❌ Кто-то из вас отказался показывать ник.")
+
+async def end_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in active_chats:
+        partner_id = active_chats.pop(user_id)
+        active_chats.pop(partner_id, None)
+        
+        await update.message.reply_text("❌ Чат завершён.", reply_markup=ReplyKeyboardRemove())
+        await context.bot.send_message(partner_id, "❌ Собеседник завершил чат.", reply_markup=ReplyKeyboardRemove())
+        await show_main_menu(update, user_id)
+        await show_main_menu(None, partner_id)
+    else:
+        await update.message.reply_text("❗️Вы не находитесь в чате.")
+
+# ========== АДМИНКА ==========
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in ADMIN_IDS:
+        await show_admin_menu(update)
+    else:
+        await update.message.reply_text("🔐 Введите пароль для доступа к админ-панели:")
+        context.user_data['awaiting_admin_password'] = True
+
+async def password_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get('awaiting_admin_password'):
+        if update.message.text.strip() == ADMIN_PASSWORD:
+            ADMIN_IDS.add(update.effective_user.id)
+            await update.message.reply_text("✅ Пароль верный. Добро пожаловать в админ-панель.", reply_markup=ReplyKeyboardRemove())
+            await show_admin_menu(update)
+        else:
+            await update.message.reply_text("❌ Неверный пароль.")
+        context.user_data['awaiting_admin_password'] = False
+
+async def show_admin_menu(update: Update):
+    keyboard = [
+        ["📊 Статистика", "♻️ Завершить все чаты"],
+        ["👮‍♂️ Забанить", "🔓 Разбанить"],
+        ["🔐 Выйти из админ-панели"]
+    ]
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("👑 Админ-панель активна.", reply_markup=markup)
+
+async def admin_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+
+    text = update.message.text
+    
+    if not text:
+        logging.warning("Получено пустое текстовое сообщение в admin_menu_handler.")
+        return
+    
+    if "awaiting_ban_id" in context.user_data:
+        try:
+            target_id = int(text)
+            banned_users.add(target_id)
+            await context.bot.send_message(target_id, "🚫 Вы были заблокированы администратором.")
+            await update.message.reply_text(f"✅ Пользователь `{target_id}` забанен.")
+        except (ValueError, Exception):
+            await update.message.reply_text("❌ Неверный ID. Попробуйте снова.")
+        finally:
+            del context.user_data["awaiting_ban_id"]
+        return
+        
+    if "awaiting_unban_id" in context.user_data:
+        try:
+            target_id = int(text)
+            if target_id in banned_users:
+                banned_users.remove(target_id)
+                await update.message.reply_text(f"✅ Пользователь `{target_id}` разбанен.")
+            else:
+                await update.message.reply_text(f"❌ Пользователь `{target_id}` не был забанен.")
+        except (ValueError, Exception):
+            await update.message.reply_text("❌ Неверный ID. Попробуйте снова.")
+        finally:
+            del context.user_data["awaiting_unban_id"]
+        return
+
+    if text == "📊 Статистика":
+        await update.message.reply_text(
+            f"👥 Пользователей согласилось: {len([u for u in user_agreements.values() if u])}\n"
+            f"💬 Активных чатов: {len(active_chats)//2}\n"
+            f"⚠️ Жалоб: {len(reported_users)}\n"
+            f"⛔ Забанено: {len(banned_users)}\n"
+            f"🔗 Всего рефералов: {sum(referrals.values())}"
+        )
+    elif text == "♻️ Завершить все чаты":
+        active_chat_users = list(active_chats.keys())
+        for uid in active_chat_users:
+            if uid in active_chats:
+                await end_chat(update, context)
+        await update.message.reply_text("🔄 Все активные чаты завершены.")
+    elif text == "👮‍♂️ Забанить":
+        await update.message.reply_text("Введите ID пользователя, которого нужно забанить:")
+        context.user_data["awaiting_ban_id"] = True
+    elif text == "🔓 Разбанить":
+        await update.message.reply_text("Введите ID пользователя, которого нужно разбанить:")
+        context.user_data["awaiting_unban_id"] = True
+    elif text == "🔐 Выйти из админ-панели":
+        ADMIN_IDS.discard(user_id)
+        await update.message.reply_text("🚪 Вы вышли из админ-панели.", reply_markup=ReplyKeyboardRemove())
+
+# ========== ЗАПУСК ==========
+if __name__ == '__main__':
+    PORT = int(os.environ.get('PORT', 5000))
+    WEBHOOK_URL = os.environ.get('WEBHOOK_URL', "https://test-1-1-zard.onrender.com")
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    app.add_error_handler(error_handler)
+    
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('admin', admin_command))
+
+    app.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=ADMIN_IDS), admin_menu_handler))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message_handler))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Sticker.ALL, media_handler))
+
+    app.run_webhook(listen="0.0.0.0", port=PORT, url_path=BOT_TOKEN, webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+
