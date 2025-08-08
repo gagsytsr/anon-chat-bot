@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -37,8 +38,9 @@ user_interests = {}
 referrals = {}
 invited_by = {}
 user_balance = {}
-# Новый список для пользователей, которые разблокировали чат 18+
 unlocked_18plus = set()
+warnings = {}
+chat_history = {} # Новый словарь для хранения истории чатов
 
 # Обновленный список интересов с эмодзи
 available_interests = {
@@ -50,6 +52,8 @@ available_interests = {
 REWARD_FOR_REFERRAL = 10
 COST_FOR_18PLUS = 50
 COST_FOR_UNBAN = 100
+COST_FOR_PHOTO = 50
+MAX_WARNINGS = 3
 
 # ====== СТАРТ ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -57,18 +61,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Обработчик команды /start.
     """
     user_id = update.effective_user.id
-
+    
     if user_id in banned_users:
-        # Если пользователь забанен, показываем ему только кнопку для разблокировки
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]])
         await update.message.reply_text("❌ Вы заблокированы. Чтобы получить доступ к боту, вы должны разблокировать себя.", reply_markup=keyboard)
         return
 
-    # Инициализируем баланс для нового пользователя, если его ещё нет
     if user_id not in user_balance:
         user_balance[user_id] = 0
 
-    # Логика для реферальной ссылки
     if context.args:
         try:
             referrer_id = int(context.args[0])
@@ -101,7 +102,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     await query.answer()
 
-    # Обработка запроса на разбан
     if data == "unban_request":
         if user_balance.get(user_id, 0) >= COST_FOR_UNBAN:
             user_balance[user_id] -= COST_FOR_UNBAN
@@ -112,7 +112,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Недостаточно валюты для разблокировки. Необходимо {COST_FOR_UNBAN}. Ваш баланс: {user_balance.get(user_id, 0)}.")
         return
     
-    # Защита от использования кнопок, если пользователь забанен
     if user_id in banned_users:
         return
 
@@ -133,7 +132,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_interests = user_interests.get(user_id, [])
         interest_names = [name for name, _ in available_interests.items() if name in selected_interests]
 
-        # Логика для одноразовой покупки 18+
         if "18+" in selected_interests and user_id not in unlocked_18plus:
             if user_balance.get(user_id, 0) >= COST_FOR_18PLUS:
                 user_balance[user_id] -= COST_FOR_18PLUS
@@ -160,6 +158,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "show_name_no":
         await handle_show_name_request(user_id, context, False)
+
+    elif data == "report_chat":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Не по теме комнаты", callback_data="report_reason_off_topic")],
+            [InlineKeyboardButton("Оскорбления", callback_data="report_reason_insult")],
+            [InlineKeyboardButton("Неприемлемый контент", callback_data="report_reason_content")],
+            [InlineKeyboardButton("Разглашение личной информации", callback_data="report_reason_private_info")]
+        ])
+        await query.message.reply_text("Выберите причину жалобы:", reply_markup=keyboard)
+    
+    elif data.startswith("report_reason_"):
+        reason = data.replace("report_reason_", "")
+        partner_id = active_chats.get(user_id)
+        if not partner_id:
+            await query.message.reply_text("❌ Чат уже завершён.")
+            return
+
+        report_text = f"❗ **Жалоба**\n" \
+                      f"От пользователя: `{user_id}`\n" \
+                      f"На пользователя: `{partner_id}`\n" \
+                      f"Причина: `{reason}`\n\n" \
+                      f"**История чата:**\n{chat_history.get(user_id, '')}"
+        
+        for admin_id in ADMIN_IDS:
+            await context.bot.send_message(admin_id, report_text, parse_mode='Markdown')
+        
+        await query.message.reply_text("✅ Ваша жалоба отправлена администратору. Чат будет завершён.")
+        await end_chat(user_id, context)
 
     # ==== АДМИНКА ====
     elif data == "admin_stats":
@@ -222,6 +248,10 @@ async def show_interests_menu(update, user_id):
     """
     Показывает меню выбора интересов.
     """
+    if user_id in banned_users:
+        await update.message.reply_text("❌ Вы заблокированы и не можете искать собеседников.")
+        return
+
     user_interests[user_id] = []
     keyboard = [[InlineKeyboardButton(f"{interest} {emoji}", callback_data=f"interest_{interest}")] for interest, emoji in available_interests.items()]
     keyboard.append([InlineKeyboardButton("➡️ Готово", callback_data="interests_done")])
@@ -253,7 +283,7 @@ async def start_chat(context, u1, u2):
     active_chats[u2] = u1
     
     markup = ReplyKeyboardMarkup(
-        [["🚫 Завершить чат"], ["🔍 Начать новый чат"]],
+        [["🚫 Завершить чат"], ["🔍 Начать новый чат"], [InlineKeyboardButton("⚠️ Пожаловаться", callback_data="report_chat")]],
         resize_keyboard=True
     )
     
@@ -261,6 +291,17 @@ async def start_chat(context, u1, u2):
     await context.bot.send_message(u2, "🎉 Собеседник найден! У вас есть 10 минут, чтобы решить, хотите ли вы обменяться никами.", reply_markup=markup)
     
     context.job_queue.run_once(ask_to_show_name, 600, chat_id=u1, context={"u1": u1, "u2": u2})
+
+# Вспомогательная функция для обновления истории чата
+def update_chat_history(user_id, partner_id, message):
+    if user_id not in chat_history:
+        chat_history[user_id] = ""
+    if partner_id not in chat_history:
+        chat_history[partner_id] = ""
+    
+    history_message = f"**{user_id}**: {message}\n"
+    chat_history[user_id] += history_message
+    chat_history[partner_id] += history_message
 
 async def ask_to_show_name(context: ContextTypes.DEFAULT_TYPE):
     """
@@ -319,12 +360,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
-    # Проверка на бан в самом начале
-    if user_id in banned_users:
-        # Если пользователь забанен, игнорируем любые его сообщения, кроме команд
-        # и не даем ему возможности использовать кнопки
-        return
-
     # Обработка админ-команд
     if context.user_data.get("awaiting_admin_password"):
         if text.strip() == ADMIN_PASSWORD:
@@ -393,14 +428,33 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Обработка команд из чата
     elif user_id in active_chats:
+        partner_id = active_chats[user_id]
         if text == "🚫 Завершить чат":
             await end_chat(user_id, context)
         elif text == "🔍 Начать новый чат":
             await end_chat(user_id, context)
             await show_interests_menu(update, user_id)
         else:
-            partner_id = active_chats[user_id]
-            await context.bot.send_message(partner_id, text)
+            # Обновление истории чата
+            update_chat_history(user_id, partner_id, text)
+            
+            # Проверка на упоминание ника
+            if re.search(r'@?\s*[A-Za-z0-9_]{5,}', text) or any(s in text.lower() for s in ['ник', 'username', 'telegram']):
+                warnings[user_id] = warnings.get(user_id, 0) + 1
+                if warnings[user_id] >= MAX_WARNINGS:
+                    banned_users.add(user_id)
+                    del active_chats[partner_id]
+                    del active_chats[user_id]
+                    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]])
+                    await update.message.reply_text(f"❌ Вы были забанены за многократные попытки разгласить личную информацию. Чтобы разблокироваться, оплатите {COST_FOR_UNBAN} валюты.", reply_markup=keyboard)
+                    await context.bot.send_message(partner_id, "❌ Собеседник был забанен за нарушение правил.")
+                    # Очистка истории чата после бана
+                    del chat_history[user_id]
+                    del chat_history[partner_id]
+                else:
+                    await update.message.reply_text(f"⚠️ Предупреждение {warnings[user_id]}/{MAX_WARNINGS}: Нельзя разглашать личную информацию. Ещё {MAX_WARNINGS - warnings[user_id]} предупреждений до бана.")
+            else:
+                await context.bot.send_message(partner_id, text)
 
 # ====== ОБРАБОТЧИК МЕДИА ======
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -410,11 +464,17 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in banned_users:
         return
-        
+    
     if user_id in active_chats:
         partner = active_chats[user_id]
+        
         if update.message.photo:
-            await context.bot.send_photo(partner, update.message.photo[-1].file_id)
+            if user_balance.get(user_id, 0) >= COST_FOR_PHOTO:
+                user_balance[user_id] -= COST_FOR_PHOTO
+                await context.bot.send_photo(partner, update.message.photo[-1].file_id)
+                await update.message.reply_text(f"✅ Фото отправлено. С вашего счёта списано {COST_FOR_PHOTO} валюты.")
+            else:
+                await update.message.reply_text(f"❌ Недостаточно валюты для отправки фото. Стоимость: {COST_FOR_PHOTO}. Ваш баланс: {user_balance.get(user_id, 0)}.")
         elif update.message.video:
             await context.bot.send_video(partner, update.message.video.file_id)
         elif update.message.voice:
@@ -462,6 +522,12 @@ async def end_chat(user_id, context):
 
         await context.bot.send_message(user_id, "❌ Чат завершён.", reply_markup=ReplyKeyboardRemove())
         await context.bot.send_message(partner, "❌ Собеседник вышел.", reply_markup=ReplyKeyboardRemove())
+        
+        # Очистка истории чата
+        if user_id in chat_history:
+            del chat_history[user_id]
+        if partner in chat_history:
+            del chat_history[partner]
 
         await show_main_menu(user_id, context)
         await show_main_menu(partner, context)
@@ -476,8 +542,7 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    # Обработчик сообщений для забаненных пользователей
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, message_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VOICE, media_handler))
 
     await app.initialize()
@@ -487,3 +552,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
