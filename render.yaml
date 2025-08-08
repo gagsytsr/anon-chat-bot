@@ -1,1 +1,12 @@
-buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+services:
+  - type: worker
+    name: anon-chat-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app/main.py
+    envVars:
+      - key: BOT_TOKEN
+        value: "твой_токен_бота"
+      - key: ADMIN_SECRET
+        value: "твой_секрет_для_админки"
