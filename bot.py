@@ -18,7 +18,7 @@ if not TOKEN or not ADMIN_PASSWORD:
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Инициализируем бота с новым синтаксисом и MarkdownV2
+# Инициализируем бота с новым синтаксисом для устранения DeprecationWarning
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
 dp = Dispatcher()
 
@@ -31,15 +31,23 @@ SEARCH_TIMEOUT = 120  # 2 минуты
 CHAT_DURATION = 600   # 10 минут
 
 
+def escape_md(text: str) -> str:
+    """
+    Экранирует спецсимволы для MarkdownV2
+    """
+    escape_chars = r'\_*[]()~`>#+-=|{}.!'
+    return ''.join('\\' + c if c in escape_chars else c for c in text)
+
+
 async def start_search(user_id):
     """Начинает поиск собеседника для пользователя."""
     waiting_users[user_id] = datetime.now()
-    await bot.send_message(user_id, "🔍 Ищу собеседника...")
+    await bot.send_message(user_id, escape_md("🔍 Ищу собеседника..."))
     await asyncio.sleep(SEARCH_TIMEOUT)
 
     if user_id in waiting_users:
         del waiting_users[user_id]
-        await bot.send_message(user_id, "⏳ Поиск отменён — никого не нашлось.")
+        await bot.send_message(user_id, escape_md("⏳ Поиск отменён — никого не нашлось."))
 
 
 async def connect_users(user1, user2):
@@ -54,8 +62,8 @@ async def connect_users(user1, user2):
         [InlineKeyboardButton(text="❌ Завершить", callback_data="stop_chat")]
     ])
 
-    await bot.send_message(user1, "✅ Собеседник найден\\! Можете начинать общение.", reply_markup=kb)
-    await bot.send_message(user2, "✅ Собеседник найден\\! Можете начинать общение.", reply_markup=kb)
+    await bot.send_message(user1, escape_md("✅ Собеседник найден! Можете начинать общение."), reply_markup=kb)
+    await bot.send_message(user2, escape_md("✅ Собеседник найден! Можете начинать общение."), reply_markup=kb)
 
     await asyncio.sleep(CHAT_DURATION)
     if user1 in active_chats and user2 in active_chats:
@@ -66,8 +74,8 @@ async def stop_chat(user_id):
     """Завершает чат для пользователя и его собеседника."""
     partner_id = active_chats.get(user_id)
     if partner_id:
-        await bot.send_message(user_id, "⏹ Диалог завершён.")
-        await bot.send_message(partner_id, "⏹ Диалог завершён.")
+        await bot.send_message(user_id, escape_md("⏹ Диалог завершён."))
+        await bot.send_message(partner_id, escape_md("⏹ Диалог завершён."))
         active_chats.pop(user_id, None)
         active_chats.pop(partner_id, None)
 
@@ -76,10 +84,7 @@ async def stop_chat(user_id):
 async def cmd_start(message: types.Message):
     """Обработчик команды /start."""
     user_data[message.from_user.id] = {"username": message.from_user.username}
-    await message.answer(
-        "👋 Привет\\! Нажми /search, чтобы найти собеседника\\.\\n"
-        "Для входа в админ\\-панель используй /admin \\<пароль\\>\\."
-    )
+    await message.answer(escape_md("👋 Привет! Нажми /search, чтобы найти собеседника\\."))
 
 
 @dp.message(Command("search"))
@@ -87,7 +92,7 @@ async def cmd_search(message: types.Message):
     """Обработчик команды /search."""
     uid = message.from_user.id
     if uid in waiting_users or uid in active_chats:
-        return await message.answer("⏳ Вы уже ищете или общаетесь.")
+        return await message.answer(escape_md("⏳ Вы уже ищете или общаетесь\\."))
     if waiting_users:
         partner_id = list(waiting_users.keys())[0]
         await connect_users(uid, partner_id)
@@ -107,7 +112,9 @@ async def callback_show_nick(call: types.CallbackQuery):
     partner_id = active_chats.get(call.from_user.id)
     if partner_id:
         partner_username = user_data.get(partner_id, {}).get("username", "—")
-        await bot.send_message(call.from_user.id, f"👤 Ник собеседника: @{partner_username}")
+        # Экранируем ник, чтобы избежать ошибок в MarkdownV2
+        partner_username_escaped = escape_md(partner_username)
+        await bot.send_message(call.from_user.id, f"👤 Ник собеседника: @{partner_username_escaped}")
 
 
 @dp.message(Command("admin"))
@@ -115,15 +122,15 @@ async def cmd_admin(message: types.Message):
     """Обработчик команды /admin."""
     args = message.text.split()
     if len(args) != 2:
-        return await message.answer("❌ Использование: /admin <пароль>")
+        return await message.answer(escape_md("❌ Использование: /admin <пароль>"))
     if args[1] != ADMIN_PASSWORD:
-        return await message.answer("🚫 Неверный пароль.")
+        return await message.answer(escape_md("🚫 Неверный пароль."))
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🚫 Завершить все чаты", callback_data="admin_stop_all")]
     ])
-    await message.answer("🔐 Админ\\-панель", reply_markup=kb)
+    await message.answer(escape_md("🔐 Админ-панель"), reply_markup=kb)
 
 
 @dp.callback_query(lambda c: c.data == "admin_stats")
@@ -131,8 +138,7 @@ async def admin_stats(call: types.CallbackQuery):
     """Обработчик колбэка для показа статистики админ-панели."""
     total_users = len(user_data)
     active_pairs = len(active_chats) // 2
-    await call.message.answer(f"📊 Пользователей всего: {total_users}\n"
-                              f"💬 Активных чатов: {active_pairs}")
+    await call.message.answer(escape_md(f"📊 Пользователей всего: {total_users}\n💬 Активных чатов: {active_pairs}"))
 
 
 @dp.callback_query(lambda c: c.data == "admin_stop_all")
@@ -140,7 +146,7 @@ async def admin_stop_all(call: types.CallbackQuery):
     """Обработчик колбэка для завершения всех чатов."""
     for uid in list(active_chats.keys()):
         await stop_chat(uid)
-    await call.message.answer("🚫 Все чаты завершены.")
+    await call.message.answer(escape_md("🚫 Все чаты завершены."))
 
 
 @dp.message()
