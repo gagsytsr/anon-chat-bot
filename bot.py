@@ -40,7 +40,7 @@ invited_by = {}
 user_balance = {}
 unlocked_18plus = set()
 warnings = {}
-chat_history = {} # Новый словарь для хранения истории чатов
+chat_history = {}
 
 # Обновленный список интересов с эмодзи
 available_interests = {
@@ -62,11 +62,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     user_id = update.effective_user.id
     
-    if user_id in banned_users:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]])
-        await update.message.reply_text("❌ Вы заблокированы. Чтобы получить доступ к боту, вы должны разблокировать себя.", reply_markup=keyboard)
-        return
-
     if user_id not in user_balance:
         user_balance[user_id] = 0
 
@@ -155,21 +150,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "show_name_no":
         await handle_show_name_request(user_id, context, False)
-
-    elif data == "report_chat":
-        # Логика для кнопки "Пожаловаться" в чате
-        partner_id = active_chats.get(user_id)
-        if not partner_id:
-            await query.message.reply_text("❌ Вы не в чате и не можете отправить жалобу.")
-            return
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Не по теме комнаты", callback_data="report_reason_off_topic")],
-            [InlineKeyboardButton("Оскорбления", callback_data="report_reason_insult")],
-            [InlineKeyboardButton("Неприемлемый контент", callback_data="report_reason_content")],
-            [InlineKeyboardButton("Разглашение личной информации", callback_data="report_reason_private_info")]
-        ])
-        await query.message.reply_text("Выберите причину жалобы:", reply_markup=keyboard)
     
     elif data.startswith("report_reason_"):
         reason = data.replace("report_reason_", "")
@@ -244,7 +224,11 @@ async def show_main_menu(user_id, context):
     Отправляет главное меню пользователю.
     """
     keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["🔗 Мои рефералы"]]
-    await context.bot.send_message(user_id, "Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    if user_id in banned_users:
+        keyboard = [[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]]
+        await context.bot.send_message(user_id, "❌ Вы заблокированы. Чтобы получить доступ к боту, вы должны разблокировать себя.", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await context.bot.send_message(user_id, "Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
 # ====== ПОИСК СОБЕСЕДНИКА ======
 async def show_interests_menu(update, user_id):
@@ -313,6 +297,7 @@ async def ask_to_show_name(context: ContextTypes.DEFAULT_TYPE):
     u1 = context.job.context["u1"]
     u2 = context.job.context["u2"]
     
+    # Проверка, что чат все еще активен
     if u1 in active_chats and active_chats[u1] == u2:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Да, показать ник", callback_data="show_name_yes")],
@@ -363,11 +348,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
-    # Если пользователь забанен, разрешаем только кнопки, не связанные с чатом
-    if user_id in banned_users and text not in ["💰 Мой баланс", "🔗 Мои рефералы"]:
-        await update.message.reply_text("❌ Вы заблокированы и не можете отправлять сообщения в чат или пользоваться некоторыми функциями.")
-        return
-
     # Обработка админ-команд
     if context.user_data.get("awaiting_admin_password"):
         if text.strip() == ADMIN_PASSWORD:
@@ -424,7 +404,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🔍 Поиск собеседника":
         await show_interests_menu(update, user_id)
     elif text == "⚠️ Пожаловаться":
-        # Если пользователь в чате, обрабатываем жалобу
         if user_id in active_chats:
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("Не по теме комнаты", callback_data="report_reason_off_topic")],
@@ -446,10 +425,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif user_id in active_chats:
         partner_id = active_chats[user_id]
         
-        # Если собеседник забанен, не обрабатываем сообщения и автоматически завершаем чат
+        # Если собеседник забанен, автоматически завершаем чат для второго пользователя
         if partner_id in banned_users:
-            await end_chat(user_id, context)
-            await context.bot.send_message(user_id, "❌ Чат завершён. Ваш собеседник был забанен.", reply_markup=ReplyKeyboardRemove())
+            del active_chats[user_id]
+            await update.message.reply_text("❌ Чат завершён. Ваш собеседник был забанен.", reply_markup=ReplyKeyboardRemove())
             await show_main_menu(user_id, context)
             return
 
