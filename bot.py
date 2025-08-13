@@ -223,11 +223,11 @@ async def show_main_menu(user_id, context):
     """
     Отправляет главное меню пользователю.
     """
-    keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["🔗 Мои рефералы"]]
     if user_id in banned_users:
         keyboard = [[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]]
         await context.bot.send_message(user_id, "❌ Вы заблокированы. Чтобы получить доступ к боту, вы должны разблокировать себя.", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
+        keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["🔗 Мои рефералы"]]
         await context.bot.send_message(user_id, "Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
 # ====== ПОИСК СОБЕСЕДНИКА ======
@@ -237,6 +237,11 @@ async def show_interests_menu(update, user_id):
     """
     if user_id in banned_users:
         await update.message.reply_text("❌ Вы заблокированы и не можете искать собеседников.")
+        await show_main_menu(user_id, context)
+        return
+    
+    if user_id in active_chats:
+        await update.message.reply_text("❌ Вы уже в чате. Пожалуйста, завершите его, чтобы начать новый.")
         return
 
     user_interests[user_id] = []
@@ -308,6 +313,22 @@ async def ask_to_show_name(context: ContextTypes.DEFAULT_TYPE):
         
         await context.bot.send_message(u1, "⏳ Прошло 10 минут. Хотите показать свой ник собеседнику?", reply_markup=keyboard)
         await context.bot.send_message(u2, "⏳ Прошло 10 минут. Хотите показать свой ник собеседнику?", reply_markup=keyboard)
+        
+        # Устанавливаем таймер для завершения чата, если нет ответа
+        context.job_queue.run_once(end_chat_if_no_response, 180, chat_id=u1, context={"u1": u1, "u2": u2})
+
+async def end_chat_if_no_response(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Завершает чат, если не было ответа на запрос о нике.
+    """
+    u1 = context.job.context["u1"]
+    u2 = context.job.context["u2"]
+
+    pair_key = tuple(sorted((u1, u2)))
+    if pair_key in show_name_requests:
+        await end_chat(u1, context)
+        await context.bot.send_message(u1, "⚠️ Время на принятие решения истекло. Чат завершён.")
+        await context.bot.send_message(u2, "⚠️ Время на принятие решения истекло. Чат завершён.")
 
 async def handle_show_name_request(user_id, context, agreement):
     """
@@ -339,6 +360,7 @@ async def handle_show_name_request(user_id, context, agreement):
             await context.bot.send_message(pair_key[1], "😔 Собеседник отказался. Чат остаётся анонимным.")
             
         del show_name_requests[pair_key]
+        await end_chat(user_id, context) # Завершаем чат после ответа
 
 # ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -402,6 +424,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Обработка команд из главного меню
     if text == "🔍 Поиск собеседника":
+        if user_id in active_chats:
+            await update.message.reply_text("❌ Вы уже в чате. Сначала завершите текущий чат.")
+            return
         await show_interests_menu(update, user_id)
     elif text == "⚠️ Пожаловаться":
         if user_id in active_chats:
@@ -425,7 +450,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif user_id in active_chats:
         partner_id = active_chats[user_id]
         
-        # Если собеседник забанен, автоматически завершаем чат для второго пользователя
         if partner_id in banned_users:
             del active_chats[user_id]
             await update.message.reply_text("❌ Чат завершён. Ваш собеседник был забанен.", reply_markup=ReplyKeyboardRemove())
