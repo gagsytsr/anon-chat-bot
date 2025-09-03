@@ -10,8 +10,8 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
 )
-import google.generativeai as genai
-import requests
+import onnxruntime as ort
+import numpy as np
 
 # ===== НАСТРОЙКИ ЛОГИРОВАНИЯ =====
 logging.basicConfig(
@@ -24,17 +24,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_IDS = set()
 
-# Переменная для API ключа Hugging Face.
-# --- ОБНОВЛЕНИЕ --- Теперь используем ключ от Gemini
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-if not BOT_TOKEN or not ADMIN_PASSWORD or not GEMINI_API_KEY:
-    logging.error("BOT_TOKEN, ADMIN_PASSWORD или GEMINI_API_KEY не установлены!")
+if not BOT_TOKEN or not ADMIN_PASSWORD:
+    logging.error("BOT_TOKEN или ADMIN_PASSWORD не установлены!")
     exit(1)
-
-# Инициализация Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
 
 # Словари для хранения информации
 waiting_users = []
@@ -68,6 +60,39 @@ COST_FOR_18PLUS = 50
 COST_FOR_UNBAN = 100
 COST_FOR_PHOTO = 50
 MAX_WARNINGS = 3
+
+# ====== ИНИЦИАЛИЗАЦИЯ ONNX-МОДЕЛИ ======
+# Укажите путь к ONNX-модели. Вам нужно будет скачать ее и добавить в проект.
+# Для простоты, мы будем использовать URL.
+MODEL_URL = "https://huggingface.co/distilgpt2-onnx/resolve/main/model.onnx"
+TOKENIZER_URL = "https://huggingface.co/distilgpt2-onnx/resolve/main/tokenizer.json"
+
+try:
+    logging.info("Скачивание ONNX-модели...")
+    model_path = "model.onnx"
+    tokenizer_path = "tokenizer.json"
+    
+    # Скачивание модели и токенизатора
+    if not os.path.exists(model_path):
+        response = requests.get(MODEL_URL)
+        with open(model_path, "wb") as f:
+            f.write(response.content)
+            
+    if not os.path.exists(tokenizer_path):
+        response = requests.get(TOKENIZER_URL)
+        with open(tokenizer_path, "wb") as f:
+            f.write(response.content)
+
+    from transformers import AutoTokenizer
+    
+    tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
+    session = ort.InferenceSession(model_path)
+    
+    logging.info("ONNX-модель успешно загружена!")
+    MODEL_LOADED = True
+except Exception as e:
+    logging.error(f"Ошибка при загрузке ONNX-модели: {e}")
+    MODEL_LOADED = False
 
 # ====== СТАРТ ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,22 +437,20 @@ async def handle_show_name_request(user_id, context, agreement):
 # ====== AI функция ======
 async def get_ai_response(prompt):
     """
-    Отправляет запрос к Gemini API и возвращает ответ.
+    Генерирует ответ с помощью локальной ONNX-модели.
     """
-    if not GEMINI_API_KEY:
-        return "❌ Ошибка: API ключ для Gemini не установлен. Пожалуйста, установите переменную окружения GEMINI_API_KEY."
+    if not MODEL_LOADED:
+        return "❌ Ошибка: Модель не загружена. Проверьте логи Railway."
     
-    try:
-        response = model.generate_content(prompt)
-        # Проверяем, что в ответе есть текст
-        if response and response.text:
-            return response.text
-        else:
-            return "❌ Не удалось получить ответ от AI. Попробуйте еще раз."
-
-    except Exception as e:
-        logging.error(f"Ошибка при запросе к Gemini API: {e}")
-        return f"❌ Произошла ошибка при запросе к AI: {e}"
+    input_ids = tokenizer.encode(prompt, return_tensors="np")
+    input_names = session.get_inputs()[0].name
+    
+    # Генерация токенов
+    output_ids = session.run(None, {input_names: input_ids})
+    
+    # Декодирование ответа
+    generated_text = tokenizer.decode(output_ids[0][0], skip_special_tokens=True)
+    return generated_text.replace(prompt, "", 1).strip()
 
 async def ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
