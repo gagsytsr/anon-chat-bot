@@ -10,9 +10,6 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
 )
-import onnxruntime as ort
-import numpy as np
-import requests
 
 # ===== НАСТРОЙКИ ЛОГИРОВАНИЯ =====
 logging.basicConfig(
@@ -62,49 +59,12 @@ COST_FOR_UNBAN = 100
 COST_FOR_PHOTO = 50
 MAX_WARNINGS = 3
 
-# ====== ИНИЦИАЛИЗАЦИЯ ONNX-МОДЕЛИ ======
-# Укажите путь к ONNX-модели. Вам нужно будет скачать ее и добавить в проект.
-# Для простоты, мы будем использовать URL.
-MODEL_URL = "https://huggingface.co/distilgpt2-onnx/resolve/main/model.onnx"
-TOKENIZER_URL = "https://huggingface.co/distilgpt2-onnx/resolve/main/tokenizer.json"
-
-try:
-    logging.info("Скачивание ONNX-модели...")
-    model_path = "model.onnx"
-    tokenizer_path = "tokenizer.json"
-    
-    # Скачивание модели и токенизатора
-    if not os.path.exists(model_path):
-        response = requests.get(MODEL_URL)
-        with open(model_path, "wb") as f:
-            f.write(response.content)
-            
-    if not os.path.exists(tokenizer_path):
-        response = requests.get(TOKENIZER_URL)
-        with open(tokenizer_path, "wb") as f:
-            f.write(response.content)
-
-    from transformers import AutoTokenizer
-    
-    tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
-    session = ort.InferenceSession(model_path)
-    
-    logging.info("ONNX-модель успешно загружена!")
-    MODEL_LOADED = True
-except Exception as e:
-    logging.error(f"Ошибка при загрузке ONNX-модели: {e}")
-    MODEL_LOADED = False
-
 # ====== СТАРТ ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработчик команды /start.
     """
     user_id = update.effective_user.id
-    
-    if user_id in banned_users:
-        await show_main_menu(user_id, context)
-        return
     
     if user_id not in user_balance:
         user_balance[user_id] = 0
@@ -346,7 +306,7 @@ async def start_chat(context, u1, u2):
     active_chats[u2] = u1
     
     markup = ReplyKeyboardMarkup(
-        [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"], ["💡 Идея для разговора"]],
+        [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"]],
         resize_keyboard=True
     )
 
@@ -435,42 +395,6 @@ async def handle_show_name_request(user_id, context, agreement):
             
         del show_name_requests[pair_key]
 
-# ====== AI функция ======
-async def get_ai_response(prompt):
-    """
-    Генерирует ответ с помощью локальной ONNX-модели.
-    """
-    if not MODEL_LOADED:
-        return "❌ Ошибка: Модель не загружена. Проверьте логи Railway."
-    
-    input_ids = tokenizer.encode(prompt, return_tensors="np")
-    input_names = session.get_inputs()[0].name
-    
-    # Генерация токенов
-    output_ids = session.run(None, {input_names: input_ids})
-    
-    # Декодирование ответа
-    generated_text = tokenizer.decode(output_ids[0][0], skip_special_tokens=True)
-    return generated_text.replace(prompt, "", 1).strip()
-
-async def ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обрабатывает запрос пользователя для получения идеи для разговора.
-    """
-    user_id = update.effective_user.id
-    if user_id in active_chats:
-        partner_id = active_chats[user_id]
-        
-        prompt = "Сгенерируй 5 коротких идей для разговора на русском языке, без лишних слов, просто список:"
-        await context.bot.send_message(user_id, "⏳ Генерирую идеи...")
-        
-        response_text = await get_ai_response(prompt)
-        
-        await context.bot.send_message(user_id, f"💡 **Идеи для разговора**:\n{response_text}", parse_mode='Markdown')
-        await context.bot.send_message(partner_id, f"💡 **Идеи для разговора**:\n{response_text}", parse_mode='Markdown')
-    else:
-        await update.message.reply_text("❌ Вы можете получить идеи для разговора только находясь в активном чате.")
-
 # ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -556,8 +480,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "💰 Мой баланс":
         balance = user_balance.get(user_id, 0)
         await update.message.reply_text(f"💰 Ваш текущий баланс: {balance}")
-    elif text == "💡 Идея для разговора":
-        await ai_handler(update, context)
 
     # Обработка команд из чата
     elif user_id in active_chats:
