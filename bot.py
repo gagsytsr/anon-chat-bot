@@ -24,7 +24,6 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_IDS = set()
 
 # Переменная для API ключа Hugging Face.
-# Получи свой ключ здесь: https://huggingface.co/settings/tokens
 HUGGING_FACE_TOKEN = os.environ.get("HUGGING_FACE_TOKEN")
 
 if not BOT_TOKEN or not ADMIN_PASSWORD:
@@ -71,6 +70,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Обработчик команды /start.
     """
     user_id = update.effective_user.id
+    
+    if user_id in banned_users:
+        await show_main_menu(user_id, context)
+        return
     
     if user_id not in user_balance:
         user_balance[user_id] = 0
@@ -248,6 +251,18 @@ async def update_interests_menu(user_id, query):
     Обновляет кнопки выбора интересов.
     """
     await query.edit_message_reply_markup(reply_markup=await get_interests_keyboard(user_id))
+
+# ====== МЕНЮ ОСНОВНОЕ ======
+async def show_main_menu(user_id, context):
+    """
+    Отправляет главное меню пользователю.
+    """
+    if user_id in banned_users:
+        keyboard = [[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]]
+        await context.bot.send_message(user_id, "❌ Вы заблокированы. Чтобы получить доступ к боту, вы должны разблокировать себя.", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["🔗 Мои рефералы"]]
+        await context.bot.send_message(user_id, "Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
 # ====== ПОИСК СОБЕСЕДНИКА ======
 async def show_interests_menu(update, user_id):
