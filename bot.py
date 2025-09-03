@@ -158,9 +158,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await find_partner(context, user_id)
 
     elif data == "show_name_yes":
+        await query.message.edit_reply_markup(reply_markup=None)
+        await query.message.reply_text("Вы выбрали показать ник. Ждем собеседника...")
         await handle_show_name_request(user_id, context, True)
 
     elif data == "show_name_no":
+        await query.message.edit_reply_markup(reply_markup=None)
+        await query.message.reply_text("Вы выбрали не показывать ник. Чат остается анонимным.")
         await handle_show_name_request(user_id, context, False)
     
     elif data.startswith("report_reason_"):
@@ -362,8 +366,11 @@ async def handle_show_name_request(user_id, context, agreement):
     
     if u1_agree is not None and u2_agree is not None:
         if u1_agree and u2_agree:
-            u1_name = (await context.bot.get_chat(pair_key[0])).first_name
-            u2_name = (await context.bot.get_chat(pair_key[1])).first_name
+            u1_info = await context.bot.get_chat(pair_key[0])
+            u2_info = await context.bot.get_chat(pair_key[1])
+            
+            u1_name = f"@{u1_info.username}" if u1_info.username else u1_info.first_name
+            u2_name = f"@{u2_info.username}" if u2_info.username else u2_info.first_name
             
             await context.bot.send_message(pair_key[0], f"🥳 Отлично! Собеседник согласился. Его ник: {u2_name}")
             await context.bot.send_message(pair_key[1], f"🥳 Отлично! Собеседник согласился. Его ник: {u1_name}")
