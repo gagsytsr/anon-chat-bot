@@ -12,6 +12,7 @@ from telegram.ext import (
 )
 import onnxruntime as ort
 import numpy as np
+import requests
 
 # ===== НАСТРОЙКИ ЛОГИРОВАНИЯ =====
 logging.basicConfig(
