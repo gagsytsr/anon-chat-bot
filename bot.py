@@ -8,7 +8,7 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
+    ContextTypes, filters, JobQueue
 )
 
 # ===== НАСТРОЙКИ ЛОГИРОВАНИЯ =====
@@ -300,21 +300,29 @@ async def start_chat(context, u1, u2):
     chat_timers[u1] = {"message_id": message1.message_id, "minutes_left": 10}
     chat_timers[u2] = {"message_id": message2.message_id, "minutes_left": 10}
 
-    context.job_queue.run_once(update_timer, 60, chat_id=u1, context={"u1": u1, "u2": u2, "minutes_left": 9})
-    context.job_queue.run_once(ask_to_show_name, 600, chat_id=u1, context={"u1": u1, "u2": u2})
+    # Обновляем таймер каждую минуту
+    context.job_queue.run_repeating(update_timer, interval=60, first=60, data={"u1": u1, "u2": u2})
+    # Запускаем проверку на обмен никами через 10 минут
+    context.job_queue.run_once(ask_to_show_name, 600, data={"u1": u1, "u2": u2})
+
 
 async def update_timer(context: ContextTypes.DEFAULT_TYPE):
     """
     Обновляет сообщение с таймером каждую минуту.
     """
-    u1 = context.job.context["u1"]
-    u2 = context.job.context["u2"]
-    minutes_left = context.job.context["minutes_left"]
-
-    if u1 not in active_chats or active_chats[u1] != u2:
-        return
+    u1 = context.job.data["u1"]
+    u2 = context.job.data["u2"]
     
-    if minutes_left > 0:
+    if u1 not in active_chats or active_chats[u1] != u2:
+        context.job.schedule_removal()
+        return
+
+    chat_timers[u1]["minutes_left"] -= 1
+    chat_timers[u2]["minutes_left"] -= 1
+    
+    minutes_left = chat_timers[u1]["minutes_left"]
+    
+    if minutes_left >= 0:
         message_id1 = chat_timers.get(u1, {}).get("message_id")
         message_id2 = chat_timers.get(u2, {}).get("message_id")
 
@@ -338,7 +346,6 @@ async def update_timer(context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-        context.job_queue.run_once(update_timer, 60, chat_id=u1, context={"u1": u1, "u2": u2, "minutes_left": minutes_left - 1})
 
 # Вспомогательная функция для обновления истории чата
 def update_chat_history(user_id, partner_id, message):
@@ -355,8 +362,8 @@ async def ask_to_show_name(context: ContextTypes.DEFAULT_TYPE):
     """
     Спрашивает пользователей, хотят ли они показать ники, через 10 минут.
     """
-    u1 = context.job.context["u1"]
-    u2 = context.job.context["u2"]
+    u1 = context.job.data["u1"]
+    u2 = context.job.data["u2"]
     
     if u1 in active_chats and active_chats[u1] == u2:
         keyboard = InlineKeyboardMarkup([
@@ -369,14 +376,14 @@ async def ask_to_show_name(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(u1, "⏳ Прошло 10 минут. Хотите показать свой ник собеседнику?", reply_markup=keyboard)
         await context.bot.send_message(u2, "⏳ Прошло 10 минут. Хотите показать свой ник собеседнику?", reply_markup=keyboard)
         
-        context.job_queue.run_once(end_chat_if_no_response, 180, chat_id=u1, context={"u1": u1, "u2": u2})
+        context.job_queue.run_once(end_chat_if_no_response, 180, data={"u1": u1, "u2": u2})
 
 async def end_chat_if_no_response(context: ContextTypes.DEFAULT_TYPE):
     """
     Завершает чат, если не было ответа на запрос о нике.
     """
-    u1 = context.job.context["u1"]
-    u2 = context.job.context["u2"]
+    u1 = context.job.data["u1"]
+    u2 = context.job.data["u2"]
 
     pair_key = tuple(sorted((u1, u2)))
     if pair_key in show_name_requests:
@@ -623,7 +630,7 @@ async def main():
     Основная функция запуска бота.
     """
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
