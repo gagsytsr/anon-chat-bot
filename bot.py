@@ -123,6 +123,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "interests_done":
         selected_interests = user_interests.get(user_id, [])
         interest_names = [name for name, _ in available_interests.items() if name in selected_interests]
+        
+        if user_id in banned_users:
+            await query.edit_message_text("❌ Вы заблокированы и не можете искать собеседников.")
+            return
 
         if "18+" in selected_interests and user_id not in unlocked_18plus:
             if user_balance.get(user_id, 0) >= COST_FOR_18PLUS:
@@ -237,7 +241,6 @@ async def show_interests_menu(update, user_id):
     """
     if user_id in banned_users:
         await update.message.reply_text("❌ Вы заблокированы и не можете искать собеседников.")
-        await show_main_menu(user_id, context)
         return
     
     if user_id in active_chats:
@@ -360,7 +363,7 @@ async def handle_show_name_request(user_id, context, agreement):
             await context.bot.send_message(pair_key[1], "😔 Собеседник отказался. Чат остаётся анонимным.")
             
         del show_name_requests[pair_key]
-        await end_chat(user_id, context) # Завершаем чат после ответа
+        await end_chat(user_id, context)
 
 # ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -370,6 +373,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
+    if text == "🔍 Поиск собеседника" and user_id in banned_users:
+        await update.message.reply_text("❌ Вы заблокированы и не можете искать собеседников.")
+        return
+
     # Обработка админ-команд
     if context.user_data.get("awaiting_admin_password"):
         if text.strip() == ADMIN_PASSWORD:
@@ -424,9 +431,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Обработка команд из главного меню
     if text == "🔍 Поиск собеседника":
-        if user_id in active_chats:
-            await update.message.reply_text("❌ Вы уже в чате. Сначала завершите текущий чат.")
-            return
         await show_interests_menu(update, user_id)
     elif text == "⚠️ Пожаловаться":
         if user_id in active_chats:
