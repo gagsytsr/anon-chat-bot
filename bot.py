@@ -62,7 +62,7 @@ COST_FOR_18PLUS = 50
 COST_FOR_UNBAN = 100
 COST_FOR_PHOTO = 50
 MAX_WARNINGS = 3
-HUGGING_FACE_API_URL = "https://api-inference.huggingface.co/models/google/gemma-7b"
+HUGGING_FACE_API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-large"
 
 # ====== СТАРТ ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -416,7 +416,7 @@ async def get_ai_response(prompt):
     payload = {
         "inputs": prompt,
         "parameters": {
-            "max_new_tokens": 50,  # Уменьшено с 100 до 50
+            "max_new_tokens": 50,
             "return_full_text": False
         }
     }
@@ -441,7 +441,7 @@ async def ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in active_chats:
         partner_id = active_chats[user_id]
         
-        prompt = "Предложи 5 интересных идей для разговора в анонимном чате на русском языке, без лишних слов, просто список. Используй разные темы."
+        prompt = "Сгенерируй 5 коротких идей для разговора на русском языке, без лишних слов, просто список:"
         await context.bot.send_message(user_id, "⏳ Генерирую идеи...")
         
         response_text = await get_ai_response(prompt)
