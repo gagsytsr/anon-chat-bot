@@ -8,7 +8,7 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters, JobQueue
+    ContextTypes, filters
 )
 
 # ===== НАСТРОЙКИ ЛОГИРОВАНИЯ =====
@@ -300,9 +300,7 @@ async def start_chat(context, u1, u2):
     chat_timers[u1] = {"message_id": message1.message_id, "minutes_left": 10}
     chat_timers[u2] = {"message_id": message2.message_id, "minutes_left": 10}
 
-    # Обновляем таймер каждую минуту
     context.job_queue.run_repeating(update_timer, interval=60, first=60, data={"u1": u1, "u2": u2})
-    # Запускаем проверку на обмен никами через 10 минут
     context.job_queue.run_once(ask_to_show_name, 600, data={"u1": u1, "u2": u2})
 
 
@@ -621,6 +619,7 @@ async def end_chat(user_id, context):
         if partner in chat_history:
             del chat_history[partner]
 
+        # Отправляем главное меню только после сообщения о завершении
         await show_main_menu(user_id, context)
         await show_main_menu(partner, context)
 
