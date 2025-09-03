@@ -62,7 +62,7 @@ COST_FOR_18PLUS = 50
 COST_FOR_UNBAN = 100
 COST_FOR_PHOTO = 50
 MAX_WARNINGS = 3
-HUGGING_FACE_API_URL = "https://api-inference.huggingface.co/models/facebook/blenderbot-400M-distill"
+HUGGING_FACE_API_URL = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-small"
 
 # ====== СТАРТ ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -422,7 +422,7 @@ async def get_ai_response(prompt):
     }
     
     try:
-        response = requests.post(HUGGING_FACE_API_URL, headers=headers, json=payload)
+        response = requests.post(HUGGING_FACE_API_URL, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
         result = response.json()
         if isinstance(result, list) and len(result) > 0 and 'generated_text' in result[0]:
