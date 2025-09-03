@@ -41,6 +41,7 @@ user_balance = {}
 unlocked_18plus = set()
 warnings = {}
 chat_history = {}
+chat_timers = {}
 
 # Обновленный список интересов с эмодзи
 available_interests = {
@@ -101,7 +102,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_balance.get(user_id, 0) >= COST_FOR_UNBAN:
             user_balance[user_id] -= COST_FOR_UNBAN
             banned_users.discard(user_id)
-            await query.edit_message_text(f"✅ Вы успешно разблокированы за {COST_FOR_UNBAN} валюты. Ваш текущий баланс: {user_balance.get(user_id, 0)}.")
+            warnings[user_id] = 0
+            await query.edit_message_text(f"✅ Вы успешно разблокированы за {COST_FOR_UNBAN} валюты. Ваш текущий баланс: {user_balance.get(user_id, 0)}. Счётчик предупреждений сброшен.")
             await show_main_menu(user_id, context)
         else:
             await query.edit_message_text(f"❌ Недостаточно валюты для разблокировки. Необходимо {COST_FOR_UNBAN}. Ваш баланс: {user_balance.get(user_id, 0)}.")
@@ -109,6 +111,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "agree":
         user_agreements[user_id] = True
+        await query.message.delete()
         await show_main_menu(user_id, context)
 
     elif data.startswith("interest_"):
@@ -123,6 +126,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "interests_done":
         selected_interests = user_interests.get(user_id, [])
         interest_names = [name for name, _ in available_interests.items() if name in selected_interests]
+
+        if not selected_interests:
+            await query.edit_message_text("❌ Пожалуйста, выберите хотя бы один интерес.",
+                                          reply_markup=await get_interests_keyboard(user_id))
+            return
         
         if user_id in banned_users:
             await query.edit_message_text("❌ Вы заблокированы и не можете искать собеседников.")
@@ -210,9 +218,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("🚪 Вы вышли из админ-панели.", reply_markup=ReplyKeyboardRemove())
 
 # ====== МЕНЮ ИНТЕРЕСОВ ======
-async def update_interests_menu(user_id, query):
+async def get_interests_keyboard(user_id):
     """
-    Обновляет кнопки выбора интересов.
+    Создает клавиатуру для выбора интересов.
     """
     keyboard = []
     selected_interests = user_interests.get(user_id, [])
@@ -220,7 +228,13 @@ async def update_interests_menu(user_id, query):
         text = f"✅ {interest} {emoji}" if interest in selected_interests else f"{interest} {emoji}"
         keyboard.append([InlineKeyboardButton(text, callback_data=f"interest_{interest}")])
     keyboard.append([InlineKeyboardButton("➡️ Готово", callback_data="interests_done")])
-    await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+    return InlineKeyboardMarkup(keyboard)
+
+async def update_interests_menu(user_id, query):
+    """
+    Обновляет кнопки выбора интересов.
+    """
+    await query.edit_message_reply_markup(reply_markup=await get_interests_keyboard(user_id))
 
 # ====== МЕНЮ ОСНОВНОЕ ======
 async def show_main_menu(user_id, context):
@@ -248,9 +262,7 @@ async def show_interests_menu(update, user_id):
         return
 
     user_interests[user_id] = []
-    keyboard = [[InlineKeyboardButton(f"{interest} {emoji}", callback_data=f"interest_{interest}")] for interest, emoji in available_interests.items()]
-    keyboard.append([InlineKeyboardButton("➡️ Готово", callback_data="interests_done")])
-    await update.message.reply_text("Выберите интересы, чтобы найти подходящего собеседника:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("Выберите интересы, чтобы найти подходящего собеседника:", reply_markup=await get_interests_keyboard(user_id))
 
 async def find_partner(context, user_id):
     """
@@ -281,11 +293,52 @@ async def start_chat(context, u1, u2):
         [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"]],
         resize_keyboard=True
     )
+
+    message1 = await context.bot.send_message(u1, "🎉 Собеседник найден! У вас есть 10 минут, чтобы решить, хотите ли вы обменяться никами.", reply_markup=markup)
+    message2 = await context.bot.send_message(u2, "🎉 Собеседник найден! У вас есть 10 минут, чтобы решить, хотите ли вы обменяться никами.", reply_markup=markup)
     
-    await context.bot.send_message(u1, "🎉 Собеседник найден! У вас есть 10 минут, чтобы решить, хотите ли вы обменяться никами.", reply_markup=markup)
-    await context.bot.send_message(u2, "🎉 Собеседник найден! У вас есть 10 минут, чтобы решить, хотите ли вы обменяться никами.", reply_markup=markup)
-    
+    chat_timers[u1] = {"message_id": message1.message_id, "minutes_left": 10}
+    chat_timers[u2] = {"message_id": message2.message_id, "minutes_left": 10}
+
+    context.job_queue.run_once(update_timer, 60, chat_id=u1, context={"u1": u1, "u2": u2, "minutes_left": 9})
     context.job_queue.run_once(ask_to_show_name, 600, chat_id=u1, context={"u1": u1, "u2": u2})
+
+async def update_timer(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обновляет сообщение с таймером каждую минуту.
+    """
+    u1 = context.job.context["u1"]
+    u2 = context.job.context["u2"]
+    minutes_left = context.job.context["minutes_left"]
+
+    if u1 not in active_chats or active_chats[u1] != u2:
+        return
+    
+    if minutes_left > 0:
+        message_id1 = chat_timers.get(u1, {}).get("message_id")
+        message_id2 = chat_timers.get(u2, {}).get("message_id")
+
+        if message_id1:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=u1,
+                    message_id=message_id1,
+                    text=f"🎉 Собеседник найден! Осталось {minutes_left} минут, чтобы решить, хотите ли вы обменяться никами."
+                )
+            except Exception:
+                pass
+        
+        if message_id2:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=u2,
+                    message_id=message_id2,
+                    text=f"🎉 Собеседник найден! Осталось {minutes_left} минут, чтобы решить, хотите ли вы обменяться никами."
+                )
+            except Exception:
+                pass
+
+        context.job_queue.run_once(update_timer, 60, chat_id=u1, context={"u1": u1, "u2": u2, "minutes_left": minutes_left - 1})
 
 # Вспомогательная функция для обновления истории чата
 def update_chat_history(user_id, partner_id, message):
@@ -305,7 +358,6 @@ async def ask_to_show_name(context: ContextTypes.DEFAULT_TYPE):
     u1 = context.job.context["u1"]
     u2 = context.job.context["u2"]
     
-    # Проверка, что чат все еще активен
     if u1 in active_chats and active_chats[u1] == u2:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Да, показать ник", callback_data="show_name_yes")],
@@ -317,7 +369,6 @@ async def ask_to_show_name(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(u1, "⏳ Прошло 10 минут. Хотите показать свой ник собеседнику?", reply_markup=keyboard)
         await context.bot.send_message(u2, "⏳ Прошло 10 минут. Хотите показать свой ник собеседнику?", reply_markup=keyboard)
         
-        # Устанавливаем таймер для завершения чата, если нет ответа
         context.job_queue.run_once(end_chat_if_no_response, 180, chat_id=u1, context={"u1": u1, "u2": u2})
 
 async def end_chat_if_no_response(context: ContextTypes.DEFAULT_TYPE):
@@ -401,8 +452,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             target_id = int(text)
             banned_users.discard(target_id)
+            warnings[target_id] = 0
             await update.message.reply_text(f"✅ Пользователь {target_id} разбанен.")
-            await context.bot.send_message(target_id, "✅ Вы были разблокированы администратором.")
+            await context.bot.send_message(target_id, "✅ Вы были разблокированы администратором. Счётчик предупреждений сброшен.")
         except ValueError:
             await update.message.reply_text("❌ Неверный ID.")
         context.user_data.pop("awaiting_unban_id")
