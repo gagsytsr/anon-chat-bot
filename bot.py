@@ -416,14 +416,14 @@ async def get_ai_response(prompt):
     payload = {
         "inputs": prompt,
         "parameters": {
-            "max_new_tokens": 100,
+            "max_new_tokens": 50,  # Уменьшено с 100 до 50
             "return_full_text": False
         }
     }
     
     try:
         response = requests.post(HUGGING_FACE_API_URL, headers=headers, json=payload)
-        response.raise_for_status()  # Выбросит исключение для плохих статусов (4xx или 5xx)
+        response.raise_for_status()
         result = response.json()
         if isinstance(result, list) and len(result) > 0 and 'generated_text' in result[0]:
             return result[0]['generated_text']
