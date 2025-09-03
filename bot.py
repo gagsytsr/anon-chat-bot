@@ -62,7 +62,7 @@ COST_FOR_18PLUS = 50
 COST_FOR_UNBAN = 100
 COST_FOR_PHOTO = 50
 MAX_WARNINGS = 3
-HUGGING_FACE_API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-small"
+HUGGING_FACE_API_URL = "https://api-inference.huggingface.co/models/facebook/blenderbot-400M-distill"
 
 # ====== СТАРТ ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
