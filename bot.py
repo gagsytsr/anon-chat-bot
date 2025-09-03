@@ -10,6 +10,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
 )
+import requests
 
 # ===== НАСТРОЙКИ ЛОГИРОВАНИЯ =====
 logging.basicConfig(
@@ -21,6 +22,10 @@ logging.basicConfig(
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_IDS = set()
+
+# Переменная для API ключа Hugging Face.
+# Получи свой ключ здесь: https://huggingface.co/settings/tokens
+HUGGING_FACE_TOKEN = os.environ.get("HUGGING_FACE_TOKEN")
 
 if not BOT_TOKEN or not ADMIN_PASSWORD:
     logging.error("BOT_TOKEN или ADMIN_PASSWORD не установлены!")
@@ -58,6 +63,7 @@ COST_FOR_18PLUS = 50
 COST_FOR_UNBAN = 100
 COST_FOR_PHOTO = 50
 MAX_WARNINGS = 3
+HUGGING_FACE_API_URL = "https://api-inference.huggingface.co/models/google/gemma-7b"
 
 # ====== СТАРТ ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -243,18 +249,6 @@ async def update_interests_menu(user_id, query):
     """
     await query.edit_message_reply_markup(reply_markup=await get_interests_keyboard(user_id))
 
-# ====== МЕНЮ ОСНОВНОЕ ======
-async def show_main_menu(user_id, context):
-    """
-    Отправляет главное меню пользователю.
-    """
-    if user_id in banned_users:
-        keyboard = [[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]]
-        await context.bot.send_message(user_id, "❌ Вы заблокированы. Чтобы получить доступ к боту, вы должны разблокировать себя.", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["🔗 Мои рефералы"]]
-        await context.bot.send_message(user_id, "Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-
 # ====== ПОИСК СОБЕСЕДНИКА ======
 async def show_interests_menu(update, user_id):
     """
@@ -306,7 +300,7 @@ async def start_chat(context, u1, u2):
     active_chats[u2] = u1
     
     markup = ReplyKeyboardMarkup(
-        [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"]],
+        [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"], ["💡 Идея для разговора"]],
         resize_keyboard=True
     )
 
@@ -395,6 +389,53 @@ async def handle_show_name_request(user_id, context, agreement):
             
         del show_name_requests[pair_key]
 
+# ====== AI функция ======
+async def get_ai_response(prompt):
+    """
+    Отправляет запрос к Hugging Face API и возвращает ответ.
+    """
+    if not HUGGING_FACE_TOKEN:
+        return "❌ Ошибка: API ключ не установлен. Пожалуйста, установите переменную окружения HUGGING_FACE_TOKEN."
+
+    headers = {"Authorization": f"Bearer {HUGGING_FACE_TOKEN}"}
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 100,
+            "return_full_text": False
+        }
+    }
+    
+    try:
+        response = requests.post(HUGGING_FACE_API_URL, headers=headers, json=payload)
+        response.raise_for_status()  # Выбросит исключение для плохих статусов (4xx или 5xx)
+        result = response.json()
+        if isinstance(result, list) and len(result) > 0 and 'generated_text' in result[0]:
+            return result[0]['generated_text']
+        else:
+            return "❌ Не удалось получить ответ от AI. Попробуйте еще раз."
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Ошибка запроса к Hugging Face API: {e}")
+        return f"❌ Произошла ошибка при запросе к AI: {e}"
+
+async def ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обрабатывает запрос пользователя для получения идеи для разговора.
+    """
+    user_id = update.effective_user.id
+    if user_id in active_chats:
+        partner_id = active_chats[user_id]
+        
+        prompt = "Предложи 5 интересных идей для разговора в анонимном чате на русском языке, без лишних слов, просто список. Используй разные темы."
+        await context.bot.send_message(user_id, "⏳ Генерирую идеи...")
+        
+        response_text = await get_ai_response(prompt)
+        
+        await context.bot.send_message(user_id, f"💡 **Идеи для разговора**:\n{response_text}", parse_mode='Markdown')
+        await context.bot.send_message(partner_id, f"💡 **Идеи для разговора**:\n{response_text}", parse_mode='Markdown')
+    else:
+        await update.message.reply_text("❌ Вы можете получить идеи для разговора только находясь в активном чате.")
+
 # ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -480,6 +521,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "💰 Мой баланс":
         balance = user_balance.get(user_id, 0)
         await update.message.reply_text(f"💰 Ваш текущий баланс: {balance}")
+    elif text == "💡 Идея для разговора":
+        await ai_handler(update, context)
 
     # Обработка команд из чата
     elif user_id in active_chats:
