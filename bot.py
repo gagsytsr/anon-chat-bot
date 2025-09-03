@@ -162,12 +162,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "show_name_yes":
         await query.message.edit_reply_markup(reply_markup=None)
-        await query.message.reply_text("Вы выбрали показать ник. Ждем собеседника...")
+        await query.message.reply_text("✅ Вы выбрали показать ник. Ждем собеседника...")
         await handle_show_name_request(user_id, context, True)
 
     elif data == "show_name_no":
         await query.message.edit_reply_markup(reply_markup=None)
-        await query.message.reply_text("Вы выбрали не показывать ник. Чат остается анонимным.")
+        await query.message.reply_text("❌ Вы выбрали не показывать ник. Чат остается анонимным.")
         await handle_show_name_request(user_id, context, False)
     
     elif data.startswith("report_reason_"):
@@ -620,3 +620,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
