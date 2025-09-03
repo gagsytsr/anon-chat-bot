@@ -10,6 +10,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
 )
+import google.generativeai as genai
 import requests
 
 # ===== НАСТРОЙКИ ЛОГИРОВАНИЯ =====
@@ -24,11 +25,16 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_IDS = set()
 
 # Переменная для API ключа Hugging Face.
-HUGGING_FACE_TOKEN = os.environ.get("HUGGING_FACE_TOKEN")
+# --- ОБНОВЛЕНИЕ --- Теперь используем ключ от Gemini
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-if not BOT_TOKEN or not ADMIN_PASSWORD:
-    logging.error("BOT_TOKEN или ADMIN_PASSWORD не установлены!")
+if not BOT_TOKEN or not ADMIN_PASSWORD or not GEMINI_API_KEY:
+    logging.error("BOT_TOKEN, ADMIN_PASSWORD или GEMINI_API_KEY не установлены!")
     exit(1)
+
+# Инициализация Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
 
 # Словари для хранения информации
 waiting_users = []
@@ -62,7 +68,6 @@ COST_FOR_18PLUS = 50
 COST_FOR_UNBAN = 100
 COST_FOR_PHOTO = 50
 MAX_WARNINGS = 3
-HUGGING_FACE_API_URL = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-small"
 
 # ====== СТАРТ ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -407,30 +412,21 @@ async def handle_show_name_request(user_id, context, agreement):
 # ====== AI функция ======
 async def get_ai_response(prompt):
     """
-    Отправляет запрос к Hugging Face API и возвращает ответ.
+    Отправляет запрос к Gemini API и возвращает ответ.
     """
-    if not HUGGING_FACE_TOKEN:
-        return "❌ Ошибка: API ключ не установлен. Пожалуйста, установите переменную окружения HUGGING_FACE_TOKEN."
-
-    headers = {"Authorization": f"Bearer {HUGGING_FACE_TOKEN}"}
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 50,
-            "return_full_text": False
-        }
-    }
+    if not GEMINI_API_KEY:
+        return "❌ Ошибка: API ключ для Gemini не установлен. Пожалуйста, установите переменную окружения GEMINI_API_KEY."
     
     try:
-        response = requests.post(HUGGING_FACE_API_URL, headers=headers, json=payload, timeout=10)
-        response.raise_for_status()
-        result = response.json()
-        if isinstance(result, list) and len(result) > 0 and 'generated_text' in result[0]:
-            return result[0]['generated_text']
+        response = model.generate_content(prompt)
+        # Проверяем, что в ответе есть текст
+        if response and response.text:
+            return response.text
         else:
             return "❌ Не удалось получить ответ от AI. Попробуйте еще раз."
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Ошибка запроса к Hugging Face API: {e}")
+
+    except Exception as e:
+        logging.error(f"Ошибка при запросе к Gemini API: {e}")
         return f"❌ Произошла ошибка при запросе к AI: {e}"
 
 async def ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
