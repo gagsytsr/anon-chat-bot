@@ -1,4 +1,4 @@
-# keyboards.py
+# keyboards.py худ
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
 # --- Reply (обычные) клавиатуры ---
