@@ -216,3 +216,38 @@ async def add_referral(referrer_id: int, new_user_id: int):
                 await connection.execute("UPDATE users SET referral_count = referral_count + 1 WHERE user_id = $1;", referrer_id)
                 return True # Успешно
     return False # Пользователь уже был приглашен или это его первый запуск
+# database.py
+
+# ... (весь существующий код до этого места) ...
+
+# --- НОВЫЕ Функции для Админки ---
+
+async def get_bot_statistics() -> dict:
+    """Собирает основную статистику по боту."""
+    async with db_pool.acquire() as connection:
+        total_users = await connection.fetchval("SELECT COUNT(*) FROM users;")
+        banned_users = await connection.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = TRUE;")
+        # Считаем количество записей в чатах и умножаем на 2, т.к. в каждом чате 2 человека
+        users_in_chats = await connection.fetchval("SELECT COUNT(*) * 2 FROM active_chats;")
+        users_in_queue = await connection.fetchval("SELECT COUNT(*) FROM search_queue;")
+        return {
+            "total_users": total_users or 0,
+            "banned_users": banned_users or 0,
+            "users_in_chats": users_in_chats or 0,
+            "users_in_queue": users_in_queue or 0,
+        }
+
+async def get_all_active_chat_users() -> list:
+    """Возвращает список ID всех пользователей в активных чатах."""
+    async with db_pool.acquire() as connection:
+        records = await connection.fetch("SELECT user1_id, user2_id FROM active_chats;")
+        user_ids = []
+        for record in records:
+            user_ids.append(record['user1_id'])
+            user_ids.append(record['user2_id'])
+        return user_ids
+
+async def clear_all_active_chats():
+    """Удаляет все записи об активных чатах."""
+    async with db_pool.acquire() as connection:
+        await connection.execute("DELETE FROM д файла без изменений)
