@@ -1,6 +1,12 @@
-#.gitignore
+# Python
 __pycache__/
-*.рус
+*.py[cod]
+# Environments
 .env
+.venv
+env/
 venv/
+ENV/
+# IDE specific files
 .idea/
+.vscode/
