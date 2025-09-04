@@ -1,15 +1,11 @@
+# keyboards.py
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
 # --- Reply (обычные) клавиатуры ---
 
-def get_main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
-    """Возвращает клавиатуру главного меню. Добавляет кнопку админа, если нужно."""
-    keyboard = [
-        ["🔍 Поиск собеседника"],
-        ["💰 Мой баланс", "🔗 Мои рефералы"]
-    ]
-    if is_admin:
-        keyboard.append(["👑 Админ-панель"]) # Новая кнопка для админов
+def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Возвращает клавиатуру главного меню."""
+    keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["🔗 Мои рефералы"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_chat_keyboard() -> ReplyKeyboardMarkup:
@@ -17,25 +13,54 @@ def get_chat_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+# НОВАЯ КЛАВИАТУРА
+def get_admin_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Возвращает постоянную клавиатуру для админ-панели."""
+    keyboard = [
+        ["📊 Статистика", "💰 Выдать валюту"],
+        ["👮‍♂️ Забанить", "🔓 Разбанить"],
+        ["💸 Забрать валюту", "🚫 Завершить все чаты"],
+        ["⬅️ Выйти из админ-режима"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
 # --- Inline (кнопки в сообщении) клавиатуры ---
-# Остальные клавиатуры остаются без изменений...
+
 def get_agreement_keyboard() -> InlineKeyboardMarkup:
+    """Возвращает кнопку согласия с правилами."""
     keyboard = [[InlineKeyboardButton("✅ Согласен", callback_data="agree")]]
     return InlineKeyboardMarkup(keyboard)
 
-def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура админ-панели."""
+async def get_interests_keyboard(user_id: int, user_interests: dict, available_interests: dict) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для выбора интересов."""
+    keyboard = []
+    selected = user_interests.get(user_id, [])
+    for interest, emoji in available_interests.items():
+        text = f"✅ {interest} {emoji}" if interest in selected else f"{interest} {emoji}"
+        keyboard.append([InlineKeyboardButton(text, callback_data=f"interest_{interest}")])
+    keyboard.append([InlineKeyboardButton("➡️ Готово", callback_data="interests_done")])
+    return InlineKeyboardMarkup(keyboard)
+
+# ... (другие inline клавиатуры без изменений) ...
+def get_report_reasons_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton("💰 Выдать валюту", callback_data="admin_add_currency")],
-        [InlineKeyboardButton("💸 Забрать валюту", callback_data="admin_remove_currency")],
-        [InlineKeyboardButton("🚫 Завершить все чаты", callback_data="admin_stop_all_chats")],
-        [InlineKeyboardButton("👮‍♂️ Забанить", callback_data="admin_ban")],
-        [InlineKeyboardButton("🔓 Разбанить", callback_data="admin_unban")],
-        [InlineKeyboardButton("🚪 Выйти", callback_data="admin_exit")]
+        [InlineKeyboardButton("Не по теме комнаты", callback_data="report_reason_off_topic")],
+        [InlineKeyboardButton("Оскорбления", callback_data="report_reason_insult")],
+        [InlineKeyboardButton("Неприемлемый контент", callback_data="report_reason_content")],
+        [InlineKeyboardButton("Разглашение личной информации", callback_data="report_reason_private_info")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ... скопируйте сюда остальные ваши inline-клавиатуры из старого файла ...
 def get_unban_keyboard(cost: int) -> InlineKeyboardMarkup:
     keyboard = [[InlineKeyboardButton(f"Разблокировать за {cost} валюты", callback_data="unban_request")]]
+    return InlineKeyboardMarkup(keyboard)
+
+# НОВАЯ КЛАВИАТУРА
+def get_stop_all_confirmation_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для подтверждения остановки всех чатов."""
+    keyboard = [
+        [InlineKeyboardButton("✅ Да, я уверен", callback_data="admin_confirm_stop_all")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="admin_cancel_stop_all")]
+    ]
     return InlineKeyboardMarkup(keyboard)
