@@ -1,28 +1,45 @@
 # main.py
 
-import time
 import sys
-import os
+import time
 
-print("--- ЭКСПЕРИМЕНТ ЗАПУЩЕН ---")
-print(f"Версия Python: {sys.version}")
-
-# Проверим, видит ли скрипт переменные окружения
-bot_token_present = "ДА" if os.environ.get("BOT_TOKEN") else "НЕТ"
-print(f"Переменная BOT_TOKEN найдена: {bot_token_present}")
-
-print("Это самый простой Python скрипт.")
-print("Если ты видишь это сообщение в 'Deploy Logs', значит, окружение Railway РАБОТАЕТ.")
-
-# Принудительно отправляем всё напечатанное в лог, чтобы ничего не потерялось
+print("--- ТЕСТ ИМПОРТОВ ЗАПУЩЕН ---")
 sys.stdout.flush()
 
-# Поддерживаем жизнь скрипта, чтобы доказать, что он не падает сразу
-count = 0
-while count < 120:  # Работаем 2 минуты
-    print(f"Эксперимент в процессе... прошло {count + 1} сек.")
+try:
+    print("Импортируем системные библиотеки (os, asyncio, logging)...")
+    import os
+    import asyncio
+    import logging
     sys.stdout.flush()
-    time.sleep(1)
-    count += 1
+    print("...Успешно.")
+    
+    print("\nИмпортируем python-telegram-bot...")
+    from telegram.ext import Application
+    sys.stdout.flush()
+    print("...Успешно.")
 
-print("--- ЭКСПЕРИМЕНТ УСПЕШНО ЗАВЕРШЕН ---")
+    print("\nИмпортируем asyncpg...")
+    import asyncpg
+    sys.stdout.flush()
+    print("...Успешно.")
+    
+    print("\nИмпортируем локальные файлы: database, keyboards...")
+    # Убедись, что эти файлы существуют и в них нет синтаксических ошибок
+    import database
+    import keyboards
+    sys.stdout.flush()
+    print("...Успешно.")
+
+    print("\n--- ВСЕ ИМПОРТЫ ПРОШЛИ УСПЕШНО! ---")
+
+except Exception as e:
+    print(f"\n!!! ПРОИЗОШЛА ОШИБКА ВО ВРЕМЯ ИМПОРТА: {e}")
+    import traceback
+    traceback.print_exc()
+
+finally:
+    sys.stdout.flush()
+    print("\nТест завершен. Скрипт будет работать еще 2 минуты.")
+    time.sleep(120)
+
