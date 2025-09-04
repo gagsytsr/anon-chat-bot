@@ -128,7 +128,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "interests_done":
         selected_interests = user_interests.get(user_id, [])
-        interest_names = [name for name, _ in available_interests.items() if name in selected_interests]
+        interest_names = [name for name in selected_interests]
 
         if not selected_interests:
             await query.edit_message_text("❌ Пожалуйста, выберите хотя бы один интерес.",
@@ -162,12 +162,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "show_name_yes":
         await query.message.edit_reply_markup(reply_markup=None)
-        await query.message.reply_text("✅ Вы выбрали показать ник. Ждем собеседника...")
+        await query.message.reply_text("✅ Вы согласились показать ник. Ожидаем ответа собеседника...")
         await handle_show_name_request(user_id, context, True)
 
     elif data == "show_name_no":
         await query.message.edit_reply_markup(reply_markup=None)
-        await query.message.reply_text("❌ Вы выбрали не показывать ник. Чат остается анонимным.")
+        await query.message.reply_text("❌ Вы отказались показывать ник. Чат будет завершён.")
         await handle_show_name_request(user_id, context, False)
     
     elif data.startswith("report_reason_"):
@@ -278,6 +278,8 @@ async def find_partner(context, user_id):
     user_interests_set = set(user_interests.get(user_id, []))
     
     for waiting_user_id in list(waiting_users):
+        if waiting_user_id == user_id:
+            continue
         waiting_user_interests_set = set(user_interests.get(waiting_user_id, []))
         if user_interests_set & waiting_user_interests_set:
             waiting_users.remove(waiting_user_id)
@@ -289,14 +291,17 @@ async def find_partner(context, user_id):
         
     await context.bot.send_message(user_id, "⏳ Ищем собеседника с похожими интересами...")
 
-# ====== НОВАЯ ФУНКЦИЯ ДЛЯ ЗАПУСКА ТАЙМЕРА ======
+# ====== УПРАВЛЕНИЕ ЧАТОМ И ТАЙМЕРАМИ ======
 async def chat_timer_task(context, u1, u2):
+    """
+    Задача, которая ждет 10 минут и затем спрашивает о показе ников.
+    """
     try:
-        await asyncio.sleep(600)  # Ждём 10 минут
-        if u1 in active_chats and active_chats[u1] == u2:
+        await asyncio.sleep(600)  # 10 минут
+        if u1 in active_chats and active_chats.get(u1) == u2:
             await ask_to_show_name(context, u1, u2)
     except asyncio.CancelledError:
-        pass
+        pass  # Задача была отменена, ничего не делаем
 
 async def start_chat(context, u1, u2):
     """
@@ -313,12 +318,15 @@ async def start_chat(context, u1, u2):
     await context.bot.send_message(u1, "🎉 Собеседник найден! У вас есть 10 минут, чтобы решить, хотите ли вы обменяться никами.", reply_markup=markup)
     await context.bot.send_message(u2, "🎉 Собеседник найден! У вас есть 10 минут, чтобы решить, хотите ли вы обменяться никами.", reply_markup=markup)
     
+    # Запускаем таймер
     task = asyncio.create_task(chat_timer_task(context, u1, u2))
     pair_key = tuple(sorted((u1, u2)))
     active_tasks[pair_key] = task
 
-
 def update_chat_history(user_id, partner_id, message):
+    """
+    Обновляет историю чата для жалоб.
+    """
     if user_id not in chat_history:
         chat_history[user_id] = ""
     if partner_id not in chat_history:
@@ -330,30 +338,22 @@ def update_chat_history(user_id, partner_id, message):
 
 async def ask_to_show_name(context: ContextTypes.DEFAULT_TYPE, u1, u2):
     """
-    Спрашивает пользователей, хотят ли они показать ники, через 10 минут.
+    Спрашивает пользователей, хотят ли они показать ники.
     """
-    if u1 in active_chats and active_chats[u1] == u2:
+    if u1 in active_chats and active_chats.get(u1) == u2:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Да, показать ник", callback_data="show_name_yes")],
             [InlineKeyboardButton("❌ Нет, не показывать", callback_data="show_name_no")]
         ])
         
-        show_name_requests[(u1, u2)] = {u1: None, u2: None}
+        pair_key = tuple(sorted((u1, u2)))
+        show_name_requests[pair_key] = {u1: None, u2: None}
         
         await context.bot.send_message(u1, "⏳ Прошло 10 минут. Хотите показать свой ник собеседнику?", reply_markup=keyboard)
         await context.bot.send_message(u2, "⏳ Прошло 10 минут. Хотите показать свой ник собеседнику?", reply_markup=keyboard)
         
-        try:
-            await asyncio.sleep(180) # Ждём 3 минуты
-            if u1 in active_chats and active_chats[u1] == u2:
-                pair_key = tuple(sorted((u1, u2)))
-                if pair_key in show_name_requests:
-                    await end_chat(u1, context)
-                    await context.bot.send_message(u1, "⚠️ Время на принятие решения истекло. Чат завершён.")
-                    await context.bot.send_message(u2, "⚠️ Время на принятие решения истекло. Чат завершён.")
-        except asyncio.CancelledError:
-            pass
-
+        # Этот таймер на 3 минуты больше не нужен, так как логика в handle_show_name_request
+        # и end_chat теперь правильно управляет завершением.
 
 async def handle_show_name_request(user_id, context, agreement):
     """
@@ -367,33 +367,43 @@ async def handle_show_name_request(user_id, context, agreement):
     
     if pair_key not in show_name_requests:
         return
-        
+
+    # Если пользователь отказался, сразу завершаем чат
+    if not agreement:
+        # Уведомляем обоих и завершаем чат
+        await context.bot.send_message(user_id, "Вы отказались. Чат завершён.", reply_markup=ReplyKeyboardRemove())
+        await context.bot.send_message(partner_id, "Собеседник отказался показывать ник. Чат завершён.", reply_markup=ReplyKeyboardRemove())
+        await end_chat(user_id, context)
+        return
+
+    # Сохраняем согласие пользователя
     show_name_requests[pair_key][user_id] = agreement
     
-    u1_agree = show_name_requests[pair_key].get(pair_key[0])
-    u2_agree = show_name_requests[pair_key].get(pair_key[1])
+    # Проверяем ответы обоих
+    u1_response = show_name_requests[pair_key].get(pair_key[0])
+    u2_response = show_name_requests[pair_key].get(pair_key[1])
     
-    if u1_agree is not None and u2_agree is not None:
-        # Отменяем задачу таймера, так как оба пользователя уже ответили
-        task = active_tasks.pop(pair_key, None)
-        if task:
-            task.cancel()
-
-        if u1_agree and u2_agree:
+    # Если оба ответили
+    if u1_response is not None and u2_response is not None:
+        # Оба согласились
+        if u1_response and u2_response:
             u1_info = await context.bot.get_chat(pair_key[0])
             u2_info = await context.bot.get_chat(pair_key[1])
             
             u1_name = f"@{u1_info.username}" if u1_info.username else u1_info.first_name
             u2_name = f"@{u2_info.username}" if u2_info.username else u2_info.first_name
             
-            await context.bot.send_message(pair_key[0], f"🥳 Отлично! Собеседник согласился. Его ник: {u2_name}\n\nВы можете продолжить общение в этом же чате.")
-            await context.bot.send_message(pair_key[1], f"🥳 Отлично! Собеседник согласился. Его ник: {u1_name}\n\nВы можете продолжить общение в этом же чате.")
-        else:
-            await context.bot.send_message(pair_key[0], "😔 Собеседник отказался. Чат остаётся анонимным.")
-            await context.bot.send_message(pair_key[1], "😔 Собеседник отказался. Чат остаётся анонимным.")
-            await end_chat(user_id, context)
-            
-        del show_name_requests[pair_key]
+            await context.bot.send_message(pair_key[0], f"🥳 Отлично! Собеседник согласился. Его ник: {u2_name}\n\nВы можете продолжить общение в этом же чате или завершить его.")
+            await context.bot.send_message(pair_key[1], f"🥳 Отлично! Собеседник согласился. Его ник: {u1_name}\n\nВы можете продолжить общение в этом же чате или завершить его.")
+        
+        # Удаляем запись о запросе, так как он обработан
+        if pair_key in show_name_requests:
+            del show_name_requests[pair_key]
+        
+        # Отменяем таймер, если он еще активен
+        task = active_tasks.pop(pair_key, None)
+        if task:
+            task.cancel()
 
 # ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -486,9 +496,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         partner_id = active_chats[user_id]
         
         if partner_id in banned_users:
-            del active_chats[user_id]
-            await update.message.reply_text("❌ Чат завершён. Ваш собеседник был забанен.", reply_markup=ReplyKeyboardRemove())
-            await show_main_menu(user_id, context)
+            await end_chat(user_id, context)
+            await update.message.reply_text("❌ Чат завершён. Ваш собеседник был забанен.")
             return
 
         if text == "🚫 Завершить чат":
@@ -497,20 +506,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await end_chat(user_id, context)
             await show_interests_menu(update, user_id)
         else:
+            # Проверяем, не было ли уже запроса на показ ника. Если был, общение блокируется до ответа
+            pair_key = tuple(sorted((user_id, partner_id)))
+            if pair_key in show_name_requests:
+                 await update.message.reply_text("⏳ Пожалуйста, ответьте на предложение об обмене никами, прежде чем продолжить общение.")
+                 return
+
             update_chat_history(user_id, partner_id, text)
             
             if re.search(r'@?\s*[A-Za-z0-9_]{5,}', text) or any(s in text.lower() for s in ['ник', 'username', 'telegram']):
                 warnings[user_id] = warnings.get(user_id, 0) + 1
                 if warnings[user_id] >= MAX_WARNINGS:
                     banned_users.add(user_id)
-                    del active_chats[partner_id]
-                    del active_chats[user_id]
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]])
-                    await update.message.reply_text(f"❌ Вы были забанены за многократные попытки разгласить личную информацию. Чтобы разблокироваться, оплатите {COST_FOR_UNBAN} валюты.", reply_markup=keyboard)
-                    await context.bot.send_message(partner_id, "❌ Собеседник был забанен за нарушение правил.")
-                    del chat_history[user_id]
-                    del chat_history[partner_id]
-                    await show_main_menu(partner_id, context)
+                    await update.message.reply_text(f"❌ Вы были забанены за многократные попытки разгласить личную информацию.", reply_markup=keyboard)
+                    await context.bot.send_message(partner_id, "❌ Собеседник был забанен за нарушение правил. Чат завершён.")
+                    await end_chat(user_id, context)
                 else:
                     await update.message.reply_text(f"⚠️ Предупреждение {warnings[user_id]}/{MAX_WARNINGS}: Нельзя разглашать личную информацию. Ещё {MAX_WARNINGS - warnings[user_id]} предупреждений до бана.")
             else:
@@ -526,24 +537,28 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if user_id in active_chats:
-        partner = active_chats[user_id]
-        if partner in banned_users:
-            await update.message.reply_text("❌ Ваш собеседник был забанен. Чат завершён.")
+        partner_id = active_chats[user_id]
+        if partner_id in banned_users:
             await end_chat(user_id, context)
-            await show_main_menu(user_id, context)
+            await update.message.reply_text("❌ Ваш собеседник был забанен. Чат завершён.")
+            return
+        
+        pair_key = tuple(sorted((user_id, partner_id)))
+        if pair_key in show_name_requests:
+            await update.message.reply_text("⏳ Пожалуйста, ответьте на предложение об обмене никами, прежде чем отправлять медиа.")
             return
 
         if update.message.photo:
             if user_balance.get(user_id, 0) >= COST_FOR_PHOTO:
                 user_balance[user_id] -= COST_FOR_PHOTO
-                await context.bot.send_photo(partner, update.message.photo[-1].file_id)
+                await context.bot.send_photo(partner_id, update.message.photo[-1].file_id)
                 await update.message.reply_text(f"✅ Фото отправлено. С вашего счёта списано {COST_FOR_PHOTO} валюты.")
             else:
                 await update.message.reply_text(f"❌ Недостаточно валюты для отправки фото. Стоимость: {COST_FOR_PHOTO}. Ваш баланс: {user_balance.get(user_id, 0)}.")
         elif update.message.video:
-            await context.bot.send_video(partner, update.message.video.file_id)
+            await context.bot.send_video(partner_id, update.message.video.file_id)
         elif update.message.voice:
-            await context.bot.send_voice(partner, update.message.voice.file_id)
+            await context.bot.send_voice(partner_id, update.message.voice.file_id)
 
 # ====== КОМАНДА АДМИНА ======
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -578,27 +593,34 @@ async def end_chat(user_id, context):
     Завершает чат для двух пользователей.
     """
     if user_id in active_chats:
-        partner = active_chats.pop(user_id)
-        active_chats.pop(partner, None)
+        partner_id = active_chats.pop(user_id)
+        active_chats.pop(partner_id, None)
 
-        pair_key = tuple(sorted((user_id, partner)))
+        pair_key = tuple(sorted((user_id, partner_id)))
+        # Удаляем запрос на показ ника, если он был
         if pair_key in show_name_requests:
             del show_name_requests[pair_key]
 
+        # Отменяем и удаляем таймер
         task = active_tasks.pop(pair_key, None)
         if task:
             task.cancel()
 
-        await context.bot.send_message(user_id, "❌ Чат завершён.", reply_markup=ReplyKeyboardRemove())
-        await context.bot.send_message(partner, "❌ Собеседник вышел.", reply_markup=ReplyKeyboardRemove())
+        # Уведомляем только если пользователь еще не получил сообщение о завершении
+        # (Например, в handle_show_name_request уже отправляются сообщения)
+        if partner_id:
+             await context.bot.send_message(partner_id, "❌ Собеседник завершил чат.", reply_markup=ReplyKeyboardRemove())
+             await show_main_menu(partner_id, context)
         
+        if user_id:
+            await context.bot.send_message(user_id, "❌ Чат завершён.", reply_markup=ReplyKeyboardRemove())
+            await show_main_menu(user_id, context)
+
+        # Очищаем историю
         if user_id in chat_history:
             del chat_history[user_id]
-        if partner in chat_history:
-            del chat_history[partner]
-
-        await show_main_menu(user_id, context)
-        await show_main_menu(partner, context)
+        if partner_id in chat_history:
+            del chat_history[partner_id]
 
 # ====== ЗАПУСК БОТА ======
 async def main():
