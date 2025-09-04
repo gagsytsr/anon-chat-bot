@@ -1,8 +1,6 @@
-# database.py
-
 import asyncpg
 import os
-import json # Добавляем для работы с JSON
+import json
 from typing import Optional, List, Tuple
 
 # Пул соединений будет создан при запуске бота
@@ -19,8 +17,8 @@ async def init_db():
 
     try:
         # Railway может подставлять postgres://, а asyncpg требует postgresql://
-        # Эта строка исправляет это автоматически
-        database_url = database_url.replace("postgres://", "postgresql://", 1)
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
         
         db_pool = await asyncpg.create_pool(database_url)
         async with db_pool.acquire() as connection:
@@ -38,16 +36,16 @@ async def init_db():
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            # НОВАЯ ТАБЛИЦА: Очередь поиска
+            # Таблица: Очередь поиска
             await connection.execute("""
                 CREATE TABLE IF NOT EXISTS search_queue (
                     user_id BIGINT PRIMARY KEY,
-                    interests TEXT, -- Будем хранить интересы как JSON-строку
+                    interests TEXT,
                     added_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 );
             """)
-            # НОВАЯ ТАБЛИЦА: Активные чаты
+            # Таблица: Активные чаты
             await connection.execute("""
                 CREATE TABLE IF NOT EXISTS active_chats (
                     id SERIAL PRIMARY KEY,
@@ -63,7 +61,38 @@ async def init_db():
         print(f"❌ Ошибка инициализации базы данных: {e}")
         raise
 
-# --- Функции управления поиском (вместо waiting_users) ---
+# --- Функции для Админки ---
+
+async def get_bot_statistics() -> dict:
+    """Собирает основную статистику по боту."""
+    async with db_pool.acquire() as connection:
+        total_users = await connection.fetchval("SELECT COUNT(*) FROM users;")
+        banned_users = await connection.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = TRUE;")
+        users_in_chats = await connection.fetchval("SELECT COUNT(*) * 2 FROM active_chats;")
+        users_in_queue = await connection.fetchval("SELECT COUNT(*) FROM search_queue;")
+        return {
+            "total_users": total_users or 0,
+            "banned_users": banned_users or 0,
+            "users_in_chats": users_in_chats or 0,
+            "users_in_queue": users_in_queue or 0,
+        }
+
+async def get_all_active_chat_users() -> list:
+    """Возвращает список ID всех пользователей в активных чатах."""
+    async with db_pool.acquire() as connection:
+        records = await connection.fetch("SELECT user1_id, user2_id FROM active_chats;")
+        user_ids = []
+        for record in records:
+            user_ids.append(record['user1_id'])
+            user_ids.append(record['user2_id'])
+        return user_ids
+
+async def clear_all_active_chats():
+    """Удаляет все записи об активных чатах."""
+    async with db_pool.acquire() as connection:
+        await connection.execute("DELETE FROM active_chats;")
+
+# --- Функции управления поиском ---
 
 async def add_to_search_queue(user_id: int, interests: List[str]):
     """Добавляет пользователя в очередь поиска."""
@@ -83,16 +112,14 @@ async def find_partner_in_queue(user_id: int, interests: List[str]) -> Optional[
     """Ищет подходящего партнера в очереди."""
     user_interests_set = set(interests)
     async with db_pool.acquire() as connection:
-        # Выбираем всех, кто в поиске, кроме самого себя
         potential_partners = await connection.fetch("SELECT user_id, interests FROM search_queue WHERE user_id != $1;", user_id)
         for partner in potential_partners:
             partner_interests_set = set(json.loads(partner['interests']))
-            # Если есть хотя бы один общий интерес
             if user_interests_set & partner_interests_set:
-                return partner['user_id'] # Возвращаем ID найденного партнера
+                return partner['user_id']
     return None
 
-# --- Функции управления чатами (вместо active_chats) ---
+# --- Функции управления чатами ---
 
 async def create_chat(user1_id: int, user2_id: int):
     """Создает запись об активном чате."""
@@ -102,7 +129,6 @@ async def create_chat(user1_id: int, user2_id: int):
 async def get_partner_id(user_id: int) -> Optional[int]:
     """Находит ID партнера по чату."""
     async with db_pool.acquire() as connection:
-        # Ищем в обоих столбцах
         partner_id = await connection.fetchval(
             "SELECT user2_id FROM active_chats WHERE user1_id = $1 UNION SELECT user1_id FROM active_chats WHERE user2_id = $1;",
             user_id
@@ -120,14 +146,10 @@ async def delete_chat(user_id: int) -> Optional[Tuple[int, int]]:
             return record['user1_id'], record['user2_id']
     return None
 
-# --- Существующие функции (без серьезных изменений) ---
-# ... (все твои функции, такие как ensure_user, is_user_banned и т.д., остаются здесь)
+# --- Функции для пользователей ---
+
 async def ensure_user(user_id: int, username: str = None):
-    """
-    Гарантирует, что пользователь существует в базе данных.
-    Если нет - создаёт. Если есть - обновляет username, если он изменился.
-    Улучшенная версия: обновляет только при необходимости.
-    """
+    """Гарантирует, что пользователь существует в базе данных."""
     async with db_pool.acquire() as connection:
         await connection.execute("""
             INSERT INTO users (user_id, username) VALUES ($1, $2)
@@ -135,7 +157,6 @@ async def ensure_user(user_id: int, username: str = None):
             WHERE users.username IS DISTINCT FROM EXCLUDED.username;
         """, user_id, username)
 
-# ... (остальные твои функции ban_user, get_balance и т.д. без изменений)
 async def is_user_banned(user_id: int) -> bool:
     """Проверяет, забанен ли пользователь."""
     async with db_pool.acquire() as connection:
@@ -166,25 +187,6 @@ async def update_balance(user_id: int, amount_change: int) -> int:
         """, amount_change, user_id)
         return new_balance
 
-async def get_warnings(user_id: int) -> int:
-    """Получает количество предупреждений пользователя."""
-    async with db_pool.acquire() as connection:
-        warnings = await connection.fetchval("SELECT warnings FROM users WHERE user_id = $1;", user_id)
-        return warnings or 0
-
-async def increment_warnings(user_id: int) -> int:
-    """Увеличивает счётчик предупреждений на 1 и возвращает новое значение."""
-    async with db_pool.acquire() as connection:
-        new_warnings = await connection.fetchval("""
-            UPDATE users SET warnings = warnings + 1 WHERE user_id = $1 RETURNING warnings;
-        """, user_id)
-        return new_warnings
-
-async def reset_warnings(user_id: int):
-    """Сбрасывает счётчик предупреждений."""
-    async with db_pool.acquire() as connection:
-        await connection.execute("UPDATE users SET warnings = 0 WHERE user_id = $1;", user_id)
-
 async def has_unlocked_18plus(user_id: int) -> bool:
     """Проверяет, разблокировал ли пользователь 18+ контент."""
     async with db_pool.acquire() as connection:
@@ -205,49 +207,11 @@ async def get_referral_count(user_id: int) -> int:
 async def add_referral(referrer_id: int, new_user_id: int):
     """Добавляет реферала и обновляет счётчик пригласившего."""
     async with db_pool.acquire() as connection:
-        # Используем транзакцию для гарантии целостности данных
         async with connection.transaction():
-            # Проверяем, был ли этот юзер уже кем-то приглашен
             existing_referrer = await connection.fetchval("SELECT invited_by FROM users WHERE user_id = $1;", new_user_id)
-            # Условие: пользователь пришел сам (invited_by IS NULL) и это не его первый старт
             user_record = await connection.fetchrow("SELECT created_at FROM users WHERE user_id = $1;", new_user_id)
             if existing_referrer is None and user_record:
                 await connection.execute("UPDATE users SET invited_by = $1 WHERE user_id = $2;", referrer_id, new_user_id)
                 await connection.execute("UPDATE users SET referral_count = referral_count + 1 WHERE user_id = $1;", referrer_id)
-                return True # Успешно
-    return False # Пользователь уже был приглашен или это его первый запуск
-# database.py
-
-# ... (весь существующий код до этого места) ...
-
-# --- НОВЫЕ Функции для Админки ---
-
-async def get_bot_statistics() -> dict:
-    """Собирает основную статистику по боту."""
-    async with db_pool.acquire() as connection:
-        total_users = await connection.fetchval("SELECT COUNT(*) FROM users;")
-        banned_users = await connection.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = TRUE;")
-        # Считаем количество записей в чатах и умножаем на 2, т.к. в каждом чате 2 человека
-        users_in_chats = await connection.fetchval("SELECT COUNT(*) * 2 FROM active_chats;")
-        users_in_queue = await connection.fetchval("SELECT COUNT(*) FROM search_queue;")
-        return {
-            "total_users": total_users or 0,
-            "banned_users": banned_users or 0,
-            "users_in_chats": users_in_chats or 0,
-            "users_in_queue": users_in_queue or 0,
-        }
-
-async def get_all_active_chat_users() -> list:
-    """Возвращает список ID всех пользователей в активных чатах."""
-    async with db_pool.acquire() as connection:
-        records = await connection.fetch("SELECT user1_id, user2_id FROM active_chats;")
-        user_ids = []
-        for record in records:
-            user_ids.append(record['user1_id'])
-            user_ids.append(record['user2_id'])
-        return user_ids
-
-async def clear_all_active_chats():
-    """Удаляет все записи об активных чатах."""
-    async with db_pool.acquire() as connection:
-        await connection.execute("DELETE FROM д файла без изменений)
+                return True
+    return False
