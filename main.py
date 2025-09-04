@@ -319,10 +319,9 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     logging.info("Бот запускается...")
+    # Этот вызов блокирующий и сам обрабатывает сигналы остановки (SIGINT, SIGTERM)
     await app.run_polling()
 
+# ИЗМЕНЕНИЕ ЗДЕСЬ: Мы убрали try/except и просто вызываем asyncio.run(main())
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Бот остановлен.")
+    asyncio.run(main())
