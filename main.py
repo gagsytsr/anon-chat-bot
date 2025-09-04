@@ -4,7 +4,8 @@ import os
 import re
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    Application, # Изменяем импорт
+    CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
 )
 
@@ -17,8 +18,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 # ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ И КОНСТАНТЫ =====
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") # Оставим для обратной совместимости, но лучше использовать ADMIN_IDS
-# ID администраторов можно задать через переменную окружения, перечислив их через запятую
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 ADMIN_IDS = {int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()}
 
@@ -33,18 +33,14 @@ COST_FOR_18PLUS = 50
 COST_FOR_UNBAN = 100
 MAX_WARNINGS = 3
 
-# ===== ВРЕМЕННЫЕ ДАННЫЕ (ХРАНЯТСЯ В ПАМЯТИ) =====
-# Данные о таймерах/задачах. Их нельзя хранить в БД.
-active_tasks = {}
-
 # Список доступных интересов
 available_interests = {
     "Музыка": "🎵", "Игры": "🎮", "Кино": "🎬",
     "Путешествия": "✈️", "Общение": "💬", "18+": "🔞"
 }
 
-# ====== ОБРАБОТЧИКИ КОМАНД ======
-
+# ====== ОБРАБОТЧИКИ КОМАНД (без изменений) ======
+# ... (все твои функции-обработчики, такие как start, admin_command, и т.д., остаются здесь без изменений) ...
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start."""
     user = update.effective_user
@@ -86,8 +82,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ У вас нет доступа к этой команде.")
 
-# ====== ОСНОВНЫЕ ФУНКЦИИ И МЕНЮ ======
-
 async def show_main_menu(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Отправляет главное меню пользователю."""
     if await database.is_user_banned(user_id):
@@ -121,8 +115,6 @@ async def show_interests_menu(update: Update, user_id: int, context: ContextType
 async def show_admin_menu(update: Update):
     """Показывает админ-панель."""
     await update.message.reply_text("🔐 Админ-панель", reply_markup=keyboards.get_admin_keyboard())
-
-# ====== ЛОГИКА ЧАТА ======
 
 async def start_search_logic(user_id: int, interests: list, context: ContextTypes.DEFAULT_TYPE):
     """Основная логика поиска собеседника."""
@@ -159,7 +151,6 @@ async def end_chat(user_id: int, context: ContextTypes.DEFAULT_TYPE, initiator_m
         await context.bot.send_message(partner_id, partner_message, reply_markup=ReplyKeyboardRemove())
         await show_main_menu(partner_id, context)
 
-# ====== ОБРАБОТЧИК КНОПОК (CALLBACK) ======
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик всех inline-кнопок."""
     query = update.callback_query
@@ -168,7 +159,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # --- Основные кнопки ---
     if data == "agree":
         await query.message.delete()
         await show_main_menu(user.id, context)
@@ -183,7 +173,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text(f"❌ Недостаточно валюты. Необходимо {COST_FOR_UNBAN}.")
 
-    # --- Выбор интересов ---
     elif data.startswith("interest_"):
         interest_key = data.replace("interest_", "")
         selected = context.user_data.get('selected_interests', [])
@@ -221,14 +210,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start_search_logic(user.id, selected, context)
         context.user_data.pop('selected_interests', None)
     
-    # --- Логика админки ---
     elif data == "admin_ban":
         if user.id in ADMIN_IDS:
             await query.message.reply_text("Введите ID пользователя для бана:")
             context.user_data["awaiting_ban_id"] = True
-    # Добавьте здесь обработку других админ-кнопок по аналогии
 
-# ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает текстовые сообщения."""
     user = update.effective_user
@@ -239,7 +225,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Вы заблокированы.")
         return
 
-    # --- Логика админ-ввода ---
     if context.user_data.get("awaiting_admin_password"):
         if text == ADMIN_PASSWORD:
             ADMIN_IDS.add(user.id)
@@ -265,7 +250,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop("awaiting_ban_id")
         return
 
-    # --- Логика в чате ---
     partner_id = await database.get_partner_id(user.id)
     if partner_id:
         if text == "🚫 Завершить чат":
@@ -276,11 +260,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == "⚠️ Пожаловаться":
             await update.message.reply_text("Выберите причину:", reply_markup=keyboards.get_report_reasons_keyboard())
         else:
-            # Пересылка сообщения
             await context.bot.send_message(partner_id, text)
         return
 
-    # --- Команды из меню ---
     if text == "🔍 Поиск собеседника":
         await show_interests_menu(update, user.id, context)
     elif text == "💰 Мой баланс":
@@ -292,36 +274,46 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = f"https://t.me/{bot_username}?start={user.id}"
         await update.message.reply_text(f"🔗 Ваша реферальная ссылка:\n`{link}`\n\n👥 Приглашено пользователей: {count}", parse_mode='MarkdownV2')
     else:
-        # Если пользователь не в чате и сообщение не команда
         await update.message.reply_text("Используйте кнопки меню для навигации.", reply_markup=keyboards.get_main_menu_keyboard())
 
-# ====== ЗАПУСК БОТА ======
-async def main():
-    """Основная функция запуска бота."""
+# ====== ЗАПУСК БОТА (НОВАЯ, ПРАВИЛЬНАЯ ВЕРСИЯ) ======
+async def main() -> None:
+    """Запускает бота."""
+    # Инициализация БД
     try:
         await database.init_db()
     except Exception as e:
         logging.critical(f"Не удалось подключиться к базе данных! Бот не может быть запущен. Ошибка: {e}")
         return
     
-    # При запуске очищаем старые сессии, если они зависли
+    # Очистка старых сессий
     async with database.db_pool.acquire() as conn:
         await conn.execute("DELETE FROM search_queue;")
         await conn.execute("DELETE FROM active_chats;")
-    
     logging.info("Старые сессии поиска и чатов очищены.")
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
+    # Создаем объект Application
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Добавляем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    logging.info("Бот запускается...")
-    # Этот вызов блокирующий и сам обрабатывает сигналы остановки (SIGINT, SIGTERM)
-    await app.run_polling()
+    # Запускаем бота в асинхронном контексте
+    # Эта конструкция правильно инициализирует и завершает работу бота
+    async with app:
+        logging.info("Бот запускается...")
+        await app.start()
+        await app.updater.start_polling()
+        logging.info("Бот успешно запущен.")
+        
+        # Бот будет работать, пока его не остановят (например, сигналом от Railway)
+        # Для локального запуска можно добавить ожидание, чтобы скрипт не завершился
+        while True:
+            await asyncio.sleep(3600) # Просыпаемся раз в час
 
-# ИЗМЕНЕНИЕ ЗДЕСЬ: Мы убрали try/except и просто вызываем asyncio.run(main())
 if __name__ == "__main__":
     asyncio.run(main())
+
