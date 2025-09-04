@@ -41,8 +41,8 @@ async def main():
     # Затем обработчик нажатий на inline-кнопки
     app.add_handler(CallbackQueryHandler(handlers.callback_query_handler))
     
-    # Обработчик медиа-файлов
-    media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Sticker
+    # Обработчик медиа-файлов (Способ 1: один обработчик для всех)
+    media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.STICKER
     app.add_handler(MessageHandler(media_filters & ~filters.COMMAND, handlers.media_handler))
     
     # Обработчик текста должен идти последним, чтобы не перехватывать команды
