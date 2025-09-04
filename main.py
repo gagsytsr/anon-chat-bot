@@ -1,11 +1,11 @@
-# main.py
 import asyncio
 import logging
 import os
 import re
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    Application,  # ИЗМЕНЕНО: Используем Application напрямую
+    CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
 )
 
@@ -15,6 +15,7 @@ import keyboards
 
 # ===== НАСТРОЙКИ ЛОГИРОВАНИЯ =====
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING) # Добавлено, чтобы убрать лишние логи от HTTP-клиента
 
 # ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ И КОНСТАНТЫ =====
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -33,7 +34,8 @@ COST_FOR_PHOTO = 50
 MAX_WARNINGS = 3
 
 # ===== ВРЕМЕННЫЕ ДАННЫЕ (ХРАНЯТСЯ В ПАМЯТИ) =====
-# Эти данные не нужно хранить после перезапуска
+# ВАЖНО: Эти данные будут сбрасываться при каждом перезапуске бота.
+# Для стабильной работы их следует перенести в базу данных.
 waiting_users = []
 active_chats = {}
 show_name_requests = {}
@@ -53,14 +55,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await database.ensure_user(user.id, user.username)
 
-    # Реферальная система
     if context.args:
         try:
             referrer_id = int(context.args[0])
             if referrer_id != user.id:
-                # Убедимся, что пригласивший существует в БД
                 await database.ensure_user(referrer_id)
-                # add_referral вернет True, если реферал был новым
                 if await database.add_referral(referrer_id, user.id):
                     await database.update_balance(referrer_id, REWARD_FOR_REFERRAL)
                     await context.bot.send_message(
@@ -171,25 +170,28 @@ async def end_chat(user_id: int, context: ContextTypes.DEFAULT_TYPE):
             task.cancel()
 
         await context.bot.send_message(user_id, "❌ Чат завершён.", reply_markup=ReplyKeyboardRemove())
-        await context.bot.send_message(partner_id, "❌ Собеседник вышел.", reply_markup=ReplyKeyboardRemove())
-        
         await show_main_menu(user_id, context)
-        await show_main_menu(partner_id, context)
+        
+        # Проверяем, существует ли еще партнер в чате, прежде чем отправлять ему сообщение
+        if partner_id in active_chats:
+            await context.bot.send_message(partner_id, "❌ Собеседник вышел.", reply_markup=ReplyKeyboardRemove())
+            await show_main_menu(partner_id, context)
+
 
 # ====== ЛОГИКА ОБМЕНА НИКАМИ ======
 
 async def chat_timer_task(context, u1, u2):
     """Таймер, который через 10 минут предлагает обменяться никами."""
     try:
-        await asyncio.sleep(600)
-        if u1 in active_chats and active_chats[u1] == u2:
+        await asyncio.sleep(600) # 10 минут
+        if u1 in active_chats and active_chats.get(u1) == u2:
             await ask_to_show_name(context, u1, u2)
     except asyncio.CancelledError:
         pass
 
 async def ask_to_show_name(context: ContextTypes.DEFAULT_TYPE, u1, u2):
     """Спрашивает пользователей, хотят ли они показать ники."""
-    if u1 in active_chats and active_chats[u1] == u2:
+    if u1 in active_chats and active_chats.get(u1) == u2:
         pair_key = tuple(sorted((u1, u2)))
         show_name_requests[pair_key] = {u1: None, u2: None}
         
@@ -215,20 +217,27 @@ async def handle_show_name_request(user_id: int, context: ContextTypes.DEFAULT_T
     show_name_requests[pair_key][user_id] = agreement
     responses = show_name_requests[pair_key]
     
-    if all(responses.values()): # Если оба ответили "да"
-        u1, u2 = pair_key
-        u1_info = await context.bot.get_chat(u1)
-        u2_info = await context.bot.get_chat(u2)
-        
-        u1_name = f"@{u1_info.username}" if u1_info.username else u1_info.first_name
-        u2_name = f"@{u2_info.username}" if u2_info.username else u2_info.first_name
-        
-        await context.bot.send_message(u1, f"🥳 Собеседник согласился! Его ник: {u2_name}")
-        await context.bot.send_message(u2, f"🥳 Собеседник согласился! Его ник: {u1_name}")
-        
+    if all(r is not None for r in responses.values()): # Если оба ответили
+        if all(responses.values()): # Если оба ответили "да"
+            u1, u2 = pair_key
+            try:
+                u1_info = await context.bot.get_chat(u1)
+                u2_info = await context.bot.get_chat(u2)
+                
+                u1_name = f"@{u1_info.username}" if u1_info.username else u1_info.first_name
+                u2_name = f"@{u2_info.username}" if u2_info.username else u2_info.first_name
+                
+                await context.bot.send_message(u1, f"🥳 Собеседник согласился! Его контакт: {u2_name}")
+                await context.bot.send_message(u2, f"🥳 Собеседник согласился! Его контакт: {u1_name}")
+            except Exception as e:
+                logging.error(f"Ошибка при получении информации о пользователях: {e}")
+                await context.bot.send_message(user_id, "Не удалось получить информацию о собеседнике.")
+                await context.bot.send_message(partner_id, "Не удалось получить информацию о собеседнике.")
+
         del show_name_requests[pair_key]
         task = active_tasks.pop(pair_key, None)
         if task: task.cancel()
+
 
 # ====== ОБРАБОТЧИК КНОПОК (CALLBACK) ======
 
@@ -240,7 +249,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # --- Основные кнопки ---
     if data == "agree":
         await query.message.delete()
         await show_main_menu(user.id, context)
@@ -255,13 +263,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text(f"❌ Недостаточно валюты. Необходимо {COST_FOR_UNBAN}.")
 
-    # --- Выбор интересов ---
     elif data.startswith("interest_"):
         interest_key = data.replace("interest_", "")
-        if interest_key in user_interests.get(user.id, []):
+        user_interests.setdefault(user.id, [])
+        if interest_key in user_interests[user.id]:
             user_interests[user.id].remove(interest_key)
         else:
-            user_interests.setdefault(user.id, []).append(interest_key)
+            user_interests[user.id].append(interest_key)
         await query.edit_message_reply_markup(
             reply_markup=await keyboards.get_interests_keyboard(user.id, user_interests, available_interests)
         )
@@ -269,8 +277,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "interests_done":
         selected = user_interests.get(user.id, [])
         if not selected:
-            await query.edit_message_text("❌ Пожалуйста, выберите хотя бы один интерес.",
-                reply_markup=await keyboards.get_interests_keyboard(user.id, user_interests, available_interests))
+            await query.answer("❌ Пожалуйста, выберите хотя бы один интерес.", show_alert=True)
             return
         
         if "18+" in selected and not await database.has_unlocked_18plus(user.id):
@@ -288,7 +295,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await find_partner(context, user.id)
 
-    # --- Обмен никами ---
     elif data == "show_name_yes":
         await query.message.edit_reply_markup(reply_markup=None)
         await query.message.reply_text("✅ Вы согласились. Ожидаем ответа собеседника...")
@@ -298,16 +304,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_reply_markup(reply_markup=None)
         await handle_show_name_request(user.id, context, False)
 
-    # --- Жалобы ---
     elif data.startswith("report_reason_"):
-        # Логика жалоб (остается без изменений)
         pass
     
-    # --- Админка ---
     elif data == "admin_ban":
         await query.message.reply_text("Введите ID для бана:")
         context.user_data["awaiting_ban_id"] = True
-    # ... и другие админ-кнопки
+
 
 # ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
 
@@ -320,8 +323,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await database.is_user_banned(user.id):
         await update.message.reply_text("❌ Вы заблокированы.")
         return
+
+    # ДОБАВЛЕНО: Логика проверки пароля администратора
+    if context.user_data.get("awaiting_admin_password"):
+        if text == ADMIN_PASSWORD:
+            ADMIN_IDS.add(user.id)
+            await update.message.reply_text("✅ Пароль верный. Доступ предоставлен.")
+            await show_admin_menu(update)
+        else:
+            await update.message.reply_text("❌ Неверный пароль.")
+        context.user_data.pop("awaiting_admin_password", None)
+        return
         
-    # --- Логика админ-ввода ---
     if context.user_data.get("awaiting_ban_id"):
         try:
             target_id = int(text)
@@ -334,7 +347,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("awaiting_ban_id", None)
         return
 
-    # --- Команды из меню ---
     if text == "🔍 Поиск собеседника":
         await show_interests_menu(update, user.id)
     elif text == "💰 Мой баланс":
@@ -345,7 +357,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = f"https://t.me/{context.bot.username}?start={user.id}"
         await update.message.reply_text(f"🔗 Ваша ссылка: {link}\n👥 Приглашено: {count}")
 
-    # --- Логика в чате ---
     elif user.id in active_chats:
         partner_id = active_chats[user.id]
         if text == "🚫 Завершить чат":
@@ -356,8 +367,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == "⚠️ Пожаловаться":
             await update.message.reply_text("Выберите причину:", reply_markup=keyboards.get_report_reasons_keyboard())
         else:
-            # Проверка на разглашение личной информации
-            if re.search(r'@?\s*[A-Za-z0-9_]{5,}', text):
+            # ИЗМЕНЕНО: Более точный regex для поиска личной информации
+            if re.search(r'(?:@|t\.me/|https?://t\.me/)[a-zA-Z0-9_]{5,}', text):
                 warnings = await database.increment_warnings(user.id)
                 if warnings >= MAX_WARNINGS:
                     await database.ban_user(user.id)
@@ -369,7 +380,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await context.bot.send_message(partner_id, text)
 
-# ====== ЗАПУСК БОТА ======
+# ====== ЗАПУСК БОТА (ПОЛНОСТЬЮ ИЗМЕНЕНО) ======
 async def main():
     """Основная функция запуска бота."""
     try:
@@ -378,17 +389,26 @@ async def main():
         logging.critical(f"Не удалось подключиться к базе данных! Бот не может быть запущен. Ошибка: {e}")
         return
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    # app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VOICE, media_handler))
 
     logging.info("Бот запускается...")
-    await app.run_polling()
+
+    async with app:
+        await app.initialize()
+        await app.updater.start_polling()
+        await app.start()
+        
+        logging.info("Бот успешно запущен и работает.")
+        await asyncio.Event().wait()
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Бот остановлен.")
