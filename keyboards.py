@@ -9,3 +9,10 @@ def admin_keyboard():
         [InlineKeyboardButton("🔓 Разбанить", callback_data="admin_unban")],
         [InlineKeyboardButton("🚪 Выйти", callback_data="admin_exit")]
     ])
+from telegram import ReplyKeyboardMarkup
+
+def main_menu():
+    return ReplyKeyboardMarkup(
+        [["🔍 Поиск", "🔗 Рефералы"], ["💰 Баланс"]],
+        resize_keyboard=True
+    )
