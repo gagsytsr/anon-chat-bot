@@ -13,7 +13,6 @@ def get_chat_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# НОВАЯ КЛАВИАТУРА
 def get_admin_reply_keyboard() -> ReplyKeyboardMarkup:
     """Возвращает постоянную клавиатуру для админ-панели."""
     keyboard = [
@@ -42,21 +41,20 @@ async def get_interests_keyboard(user_id: int, user_interests: dict, available_i
     keyboard.append([InlineKeyboardButton("➡️ Готово", callback_data="interests_done")])
     return InlineKeyboardMarkup(keyboard)
 
-# ... (другие inline клавиатуры без изменений) ...
 def get_report_reasons_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура с причинами жалобы."""
     keyboard = [
-        [InlineKeyboardButton("Не по теме комнаты", callback_data="report_reason_off_topic")],
-        [InlineKeyboardButton("Оскорбления", callback_data="report_reason_insult")],
-        [InlineKeyboardButton("Неприемлемый контент", callback_data="report_reason_content")],
-        [InlineKeyboardButton("Разглашение личной информации", callback_data="report_reason_private_info")]
+        [InlineKeyboardButton("Оскорбления", callback_data="report_insult")],
+        [InlineKeyboardButton("Спам/Реклама", callback_data="report_spam")],
+        [InlineKeyboardButton("Неприемлемый контент", callback_data="report_content")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_unban_keyboard(cost: int) -> InlineKeyboardMarkup:
+    """Клавиатура для запроса на разбан."""
     keyboard = [[InlineKeyboardButton(f"Разблокировать за {cost} валюты", callback_data="unban_request")]]
     return InlineKeyboardMarkup(keyboard)
 
-# НОВАЯ КЛАВИАТУРА
 def get_stop_all_confirmation_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура для подтверждения остановки всех чатов."""
     keyboard = [
