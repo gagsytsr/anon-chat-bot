@@ -42,7 +42,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(handlers.callback_query_handler))
     
     # Обработчик медиа-файлов
-    media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.sticker
+    media_filters = filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Sticker
     app.add_handler(MessageHandler(media_filters & ~filters.COMMAND, handlers.media_handler))
     
     # Обработчик текста должен идти последним, чтобы не перехватывать команды
