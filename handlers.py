@@ -22,13 +22,11 @@ async def show_main_menu(user_id: int, context: ContextTypes.DEFAULT_TYPE, as_ad
     user = await db.get_or_create_user(user_id)
     
     if user['is_banned']:
-        # ИСПРАВЛЕНИЕ: Теперь здесь всегда будет показываться MAX_WARNINGS
         text = (
             f"❌ **Доступ к поиску ограничен!**\n\n"
             f"Вы заблокированы, т.к. у вас {MAX_WARNINGS} из {MAX_WARNINGS} предупреждений. "
             f"Вы можете разбанить себя, чтобы сбросить счётчик."
         )
-        # Отправляем инлайн-кнопку для разбана, но оставляем Reply-клавиатуру для доступа к балансу
         await context.bot.send_message(user_id, text, reply_markup=kb.get_ban_keyboard(), parse_mode='Markdown')
         await context.bot.send_message(user_id, "Вам доступны другие разделы меню.", reply_markup=kb.get_main_menu_keyboard())
         return
@@ -53,7 +51,6 @@ async def end_chat_session(user_id: int, context: ContextTypes.DEFAULT_TYPE, mes
         jobs = context.job_queue.get_jobs_by_name(job_name)
         for job in jobs:
             job.schedule_removal()
-        # Очистка истории чата и запросов на обмен
         context.bot_data.pop(f"history_{pair_key}", None)
         context.bot_data.pop(f"exchange_{pair_key}", None)
 
@@ -108,14 +105,11 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_for_exchange(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
     u1, u2 = job_data['user1'], job_data['user2']
-
     user1_data = await db.get_or_create_user(u1)
     if user1_data['status'] != 'in_chat' or user1_data['partner_id'] != u2:
         return
-
     pair_key = tuple(sorted((u1, u2)))
     context.bot_data[f"exchange_{pair_key}"] = {u1: None, u2: None}
-
     await context.bot.send_message(u1, "Время вышло! Хотите обменяться никами с собеседником?", reply_markup=kb.get_name_exchange_keyboard())
     await context.bot.send_message(u2, "Время вышло! Хотите обменяться никами с собеседником?", reply_markup=kb.get_name_exchange_keyboard())
 
@@ -126,22 +120,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     await query.answer()
+
+    if data == "cancel_search":
+        user = await db.get_or_create_user(user_id)
+        if user['status'] == 'waiting':
+            await db.update_user_status(user_id, 'idle')
+            await query.message.edit_text("✅ Поиск отменён.")
+            await show_main_menu(user_id, context, as_admin=(user_id in ADMIN_IDS))
+        else:
+            await query.message.edit_text("Вы не находитесь в поиске.")
+        return
     
     if data.startswith("report_"):
         reason = data.split('_')[1]
         if reason == 'cancel':
             await query.message.delete()
             return
-
         user_data = await db.get_or_create_user(user_id)
         partner_id = user_data.get('partner_id')
         if not partner_id:
             await query.edit_message_text("❌ Чат уже завершён.")
             return
-
         pair_key = tuple(sorted((user_id, partner_id)))
         history = context.bot_data.get(f"history_{pair_key}", "История чата не найдена.")
-        
         report_text = (
             f"❗️ **Новая жалоба** ❗️\n\n"
             f"👤 **От:** `{user_id}`\n"
@@ -149,7 +150,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📜 **Причина:** {reason.capitalize()}\n\n"
             f"📝 **История чата:**\n{history}"
         )
-
         if not ADMIN_IDS:
              logger.warning("Жалоба получена, но нет активных админов для ее получения!")
         for admin_id in ADMIN_IDS:
@@ -157,7 +157,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(admin_id, report_text, parse_mode='Markdown')
             except Exception as e:
                 logger.error(f"Не удалось отправить жалобу админу {admin_id}: {e}")
-
         await query.message.edit_text("✅ Ваша жалоба отправлена администратору на рассмотрение.")
         return
 
@@ -188,36 +187,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("exchange_"):
         answer = data.split('_')[1]
+        answer_text = "показать ник" if answer == "yes" else "не показывать ник"
         user_data = await db.get_or_create_user(user_id)
         partner_id = user_data.get('partner_id')
-
         if not partner_id:
             await query.message.edit_text("❌ Чат уже завершён.")
             return
-
         pair_key = tuple(sorted((user_id, partner_id)))
         exchange_data = context.bot_data.get(f"exchange_{pair_key}")
         if exchange_data is None:
             return
-
         exchange_data[user_id] = answer
-        await query.message.edit_text(f"Вы выбрали: '{answer}'. Ожидаем ответа собеседника...")
-
+        await query.message.edit_text(f"Вы выбрали: '{answer_text}'. Ожидаем ответа собеседника...")
         if all(response is not None for response in exchange_data.values()):
             u1, u2 = pair_key
             if exchange_data[u1] == 'yes' and exchange_data[u2] == 'yes':
                 user1_info = await context.bot.get_chat(u1)
                 user2_info = await context.bot.get_chat(u2)
-                
                 user1_name = f"@{user1_info.username}" if user1_info.username else user1_info.first_name
                 user2_name = f"@{user2_info.username}" if user2_info.username else user2_info.first_name
-
                 await context.bot.send_message(u1, f"🥳 Собеседник согласился! Его контакт: {user2_name}")
                 await context.bot.send_message(u2, f"🥳 Собеседник согласился! Его контакт: {user1_name}")
             else:
                 await context.bot.send_message(u1, "❌ Один из собеседников отказался. Обмен не состоялся.")
                 await context.bot.send_message(u2, "❌ Один из собеседников отказался. Обмен не состоялся.")
-            
             await end_chat_session(user_id, context, "")
         return
 
@@ -260,13 +253,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not active_users:
             await query.message.edit_text("Активных чатов нет.", reply_markup=kb.get_admin_keyboard())
             return
-
         uids_in_chat = {record['user_id'] for record in active_users}
         for uid in uids_in_chat:
             user = await db.get_or_create_user(uid)
             if user['status'] == 'in_chat':
                 await end_chat_session(uid, context, "Чат принудительно завершен администратором.")
-        
         await query.message.edit_text(f"✅ Завершено чатов: {len(uids_in_chat) // 2}.", reply_markup=kb.get_admin_keyboard())
         return
 
@@ -290,14 +281,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not selected_interests:
             await query.answer("❌ Пожалуйста, выберите хотя бы один интерес.", show_alert=True)
             return
-
         user = await db.get_or_create_user(user_id)
         if user['is_banned']:
             await query.answer("❌ Вы заблокированы и не можете искать собеседника.", show_alert=True)
             await query.message.delete()
             await show_main_menu(user_id, context, as_admin=(user_id in ADMIN_IDS))
             return
-
         if "18+" in selected_interests and not user['unlocked_18plus']:
             if user['balance'] >= COST_FOR_18PLUS:
                 await db.update_balance(user_id, -COST_FOR_18PLUS)
@@ -305,18 +294,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await query.message.edit_text(f"❌ Недостаточно монет для разблокировки 18+ (нужно {COST_FOR_18PLUS}). Ваш баланс: {user['balance']}.")
                 return
-
         await db.update_user_interests(user_id, selected_interests)
         await db.update_user_status(user_id, 'waiting')
-        await query.message.edit_text(f"✅ Интересы сохранены: {', '.join(selected_interests)}. Начинаем поиск...")
-
+        
         partner_id = await db.find_partner(user_id, selected_interests)
         if partner_id:
+            await query.message.delete()
             await db.create_chat(user_id, partner_id)
             chat_message = f"🎉 Собеседник найден! У вас есть {CHAT_TIMER_SECONDS} секунд для общения, после чего бот предложит обменяться никами."
             await context.bot.send_message(user_id, chat_message, reply_markup=kb.get_chat_keyboard())
             await context.bot.send_message(partner_id, chat_message, reply_markup=kb.get_chat_keyboard())
-            
             pair_key = tuple(sorted((user_id, partner_id)))
             context.job_queue.run_once(
                 ask_for_exchange,
@@ -324,13 +311,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data={'user1': user_id, 'user2': partner_id},
                 name=f"chat_timer_{pair_key[0]}_{pair_key[1]}"
             )
+        else:
+            await query.message.edit_text("⏳ Ищем собеседника... Вы можете отменить поиск в любой момент.", reply_markup=kb.get_cancel_search_keyboard())
 
 
 # --- Обработчик сообщений ---
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
-        
     user_id = update.effective_user.id
     text = update.message.text
 
@@ -346,7 +334,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('awaiting_ban_id')
             await admin_command(update, context)
             return
-            
         if context.user_data.get('awaiting_unban_id'):
             try:
                 target_id = int(text)
@@ -358,7 +345,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('awaiting_unban_id')
             await admin_command(update, context)
             return
-            
         if context.user_data.get('awaiting_add_currency'):
             try:
                 target_id, amount = map(int, text.split())
@@ -370,7 +356,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('awaiting_add_currency')
             await admin_command(update, context)
             return
-            
         if context.user_data.get('awaiting_remove_currency'):
             try:
                 target_id, amount = map(int, text.split())
@@ -418,9 +403,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user['status'] == 'in_chat':
+        if text == "🚫 Завершить чат":
+            await end_chat_session(user_id, context, "Собеседник завершил чат.")
+            return
+        if text == "🔍 Начать новый чат":
+            await end_chat_session(user_id, context, "Собеседник решил начать новый поиск.")
+            await update.message.reply_text("Выберите интересы для нового поиска:", reply_markup=await kb.get_interests_keyboard())
+            return
+        
         partner_id = user['partner_id']
         pair_key = tuple(sorted((user_id, partner_id)))
-
         if f"history_{pair_key}" not in context.bot_data:
             context.bot_data[f"history_{pair_key}"] = ""
         context.bot_data[f"history_{pair_key}"] += f"[{user_id}]: {text}\n"
@@ -432,15 +424,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         forbidden_keywords = ['@', 'ник', 'никнейм', 'username', 'юзернейм']
         if any(keyword in text.lower() for keyword in forbidden_keywords):
             new_warnings = await db.add_warning(user_id)
-            
             await context.bot.send_message(user_id, f"⚠️ **Предупреждение {new_warnings}/{MAX_WARNINGS}**: Нельзя разглашать личную информацию.", parse_mode='Markdown')
-
             if new_warnings >= MAX_WARNINGS:
                 await db.set_ban_status(user_id, True)
                 await context.bot.send_message(user_id, "❌ **Вы были заблокированы за многократные нарушения.**", reply_markup=kb.remove_keyboard(), parse_mode='Markdown')
                 await end_chat_session(user_id, context, "⚠️ Ваш собеседник был забанен за нарушение правил. Чат завершён.")
             return
-
+        
         await context.bot.send_message(partner_id, text)
     else:
         if text == "🔍 Поиск собеседника":
@@ -462,10 +452,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await db.get_or_create_user(user_id)
-
     if user['is_banned']:
         return
-
     if user['status'] == 'in_chat':
         if user['balance'] >= COST_FOR_PHOTO:
             new_balance = await db.update_balance(user_id, -COST_FOR_PHOTO)
