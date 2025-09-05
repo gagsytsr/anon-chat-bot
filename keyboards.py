@@ -1,4 +1,3 @@
-# keyboards.py
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from config import AVAILABLE_INTERESTS, COST_FOR_UNBAN
 
@@ -16,6 +15,14 @@ def get_main_menu_keyboard():
     """Возвращает главную клавиатуру (ReplyKeyboardMarkup)."""
     keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["🔗 Мои рефералы"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def get_admin_reply_keyboard():
+    """Возвращает специальную клавиатуру для администратора."""
+    keyboard = [
+        ["🔐 Админ-панель", "🚪 Выйти из админки"],
+        ["🔍 Поиск собеседника", "💰 Мой баланс"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_chat_keyboard():
     """Возвращает клавиатуру для активного чата."""
@@ -36,7 +43,6 @@ def get_admin_keyboard():
         [InlineKeyboardButton("🚫 Завершить все чаты", callback_data="admin_stop_all")],
         [InlineKeyboardButton("👮‍♂️ Забанить", callback_data="admin_ban")],
         [InlineKeyboardButton("🔓 Разбанить", callback_data="admin_unban")],
-        [InlineKeyboardButton("🚪 Выйти", callback_data="admin_exit")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
