@@ -15,7 +15,6 @@ def get_main_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def get_admin_reply_keyboard():
-    """Возвращает специальную клавиатуру для администратора (без выхода)."""
     keyboard = [
         ["🔐 Админ-панель"],
         ["🔍 Поиск собеседника", "💰 Мой баланс"]
@@ -27,11 +26,10 @@ def get_chat_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_ban_keyboard():
-    keyboard = [[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]]
+    keyboard = [[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} монет", callback_data="unban_request")]]
     return InlineKeyboardMarkup(keyboard)
     
 def get_balance_keyboard():
-    """Клавиатура для меню баланса с кнопкой 'Заработать'."""
     keyboard = [
         [InlineKeyboardButton("💳 Заработать", callback_data="earn_coins")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]
@@ -39,15 +37,23 @@ def get_balance_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def get_back_keyboard():
-    """Клавиатура с одной кнопкой 'Назад'."""
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]]
     return InlineKeyboardMarkup(keyboard)
 
 def get_name_exchange_keyboard():
-    """Клавиатура для предложения обмена никами."""
     keyboard = [
         [InlineKeyboardButton("✅ Да, показать ник", callback_data="exchange_yes")],
         [InlineKeyboardButton("❌ Нет, спасибо", callback_data="exchange_no")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+    
+def get_report_keyboard():
+    """Клавиатура для выбора причины жалобы."""
+    keyboard = [
+        [InlineKeyboardButton("Оскорбления", callback_data="report_insult")],
+        [InlineKeyboardButton("Спам", callback_data="report_spam")],
+        [InlineKeyboardButton("Неприемлемый контент", callback_data="report_content")],
+        [InlineKeyboardButton("Отмена", callback_data="report_cancel")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
