@@ -2,7 +2,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMa
 from config import AVAILABLE_INTERESTS, COST_FOR_UNBAN
 
 async def get_interests_keyboard(user_interests: list = None):
-    """Создает клавиатуру для выбора интересов."""
     current_interests = user_interests or []
     keyboard = []
     for interest, emoji in AVAILABLE_INTERESTS.items():
@@ -12,30 +11,47 @@ async def get_interests_keyboard(user_interests: list = None):
     return InlineKeyboardMarkup(keyboard)
 
 def get_main_menu_keyboard():
-    """Возвращает главную клавиатуру (ReplyKeyboardMarkup)."""
     keyboard = [["🔍 Поиск собеседника"], ["💰 Мой баланс"], ["🔗 Мои рефералы"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def get_admin_reply_keyboard():
-    """Возвращает специальную клавиатуру для администратора."""
+    """Возвращает специальную клавиатуру для администратора (без выхода)."""
     keyboard = [
-        ["🔐 Админ-панель", "🚪 Выйти из админки"],
+        ["🔐 Админ-панель"],
         ["🔍 Поиск собеседника", "💰 Мой баланс"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_chat_keyboard():
-    """Возвращает клавиатуру для активного чата."""
     keyboard = [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_ban_keyboard():
-    """Клавиатура для забаненного пользователя (Inline)."""
     keyboard = [[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} валюты", callback_data="unban_request")]]
+    return InlineKeyboardMarkup(keyboard)
+    
+def get_balance_keyboard():
+    """Клавиатура для меню баланса с кнопкой 'Заработать'."""
+    keyboard = [
+        [InlineKeyboardButton("💳 Заработать", callback_data="earn_coins")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_back_keyboard():
+    """Клавиатура с одной кнопкой 'Назад'."""
+    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_name_exchange_keyboard():
+    """Клавиатура для предложения обмена никами."""
+    keyboard = [
+        [InlineKeyboardButton("✅ Да, показать ник", callback_data="exchange_yes")],
+        [InlineKeyboardButton("❌ Нет, спасибо", callback_data="exchange_no")]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_admin_keyboard():
-    """Клавиатура админ-панели (Inline)."""
     keyboard = [
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton("💰 Выдать валюту", callback_data="admin_add_currency")],
@@ -47,5 +63,4 @@ def get_admin_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def remove_keyboard():
-    """Возвращает объект для удаления Reply-клавиатуры."""
     return ReplyKeyboardRemove()
