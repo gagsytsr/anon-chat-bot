@@ -10,7 +10,6 @@ from config import (
     COST_FOR_UNBAN, COST_FOR_PHOTO, CHAT_TIMER_SECONDS, MAX_WARNINGS
 )
 
-# Настройка логгера
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -20,14 +19,12 @@ logger = logging.getLogger(__name__)
 # --- Вспомогательные функции ---
 async def show_main_menu(user_id: int, context: ContextTypes.DEFAULT_TYPE, as_admin=False):
     """Отображает главное меню, в том числе для забаненных."""
-    logger.info(f"Вызов show_main_menu для user_id: {user_id}, as_admin: {as_admin}")
     user = await db.get_or_create_user(user_id)
     
     if user['is_banned']:
         text = (
             f"❌ **Доступ к поиску ограничен!**\n\n"
-            f"У вас {user['warnings']} из {MAX_WARNINGS} предупреждений. "
-            f"Вы можете разбанить себя и сбросить счётчик предупреждений."
+            f"Вы заблокированы. Вы можете разбанить себя и сбросить счётчик предупреждений."
         )
         keyboard = kb.get_ban_keyboard()
         await context.bot.send_message(user_id, text, reply_markup=keyboard, parse_mode='Markdown')
@@ -43,8 +40,7 @@ async def show_main_menu(user_id: int, context: ContextTypes.DEFAULT_TYPE, as_ad
 
 
 async def end_chat_session(user_id: int, context: ContextTypes.DEFAULT_TYPE, message_for_partner: str):
-    """Завершает чат и удаляет связанный с ним таймер."""
-    logger.info(f"Вызов end_chat_session для user_id: {user_id}")
+    """Завершает чат, удаляет таймер и историю чата."""
     user = await db.get_or_create_user(user_id)
     partner_id = user['partner_id']
     
@@ -54,14 +50,15 @@ async def end_chat_session(user_id: int, context: ContextTypes.DEFAULT_TYPE, mes
         jobs = context.job_queue.get_jobs_by_name(job_name)
         for job in jobs:
             job.schedule_removal()
-            logger.info(f"Таймер {job_name} удален.")
+        # Очистка истории чата и запросов на обмен
+        context.bot_data.pop(f"history_{pair_key}", None)
+        context.bot_data.pop(f"exchange_{pair_key}", None)
 
     actual_partner_id = await db.end_chat(user_id)
     
     if actual_partner_id:
         if message_for_partner:
             await context.bot.send_message(actual_partner_id, message_for_partner, reply_markup=kb.remove_keyboard())
-        
         is_partner_admin = actual_partner_id in ADMIN_IDS
         await show_main_menu(actual_partner_id, context, as_admin=is_partner_admin)
     
@@ -125,47 +122,50 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
-    logger.info(f"Получен Callback от user_id: {user_id} с data: '{data}'")
     await query.answer()
     
     if data.startswith("report_"):
-        logger.info(f"Обработка жалобы от {user_id}")
         reason = data.split('_')[1]
         if reason == 'cancel':
-            logger.info("Жалоба отменена.")
             await query.message.delete()
             return
 
         user_data = await db.get_or_create_user(user_id)
         partner_id = user_data.get('partner_id')
         if not partner_id:
-            logger.warning(f"Пользователь {user_id} попытался пожаловаться, но уже не в чате.")
             await query.edit_message_text("❌ Чат уже завершён.")
             return
 
-        new_warnings_count = await db.add_warning(partner_id)
-        logger.info(f"Пользователю {partner_id} выдано предупреждение. Теперь у него {new_warnings_count} предупреждений.")
-        await query.message.edit_text("✅ Ваша жалоба отправлена. Собеседнику вынесено предупреждение.")
-        await context.bot.send_message(partner_id, f"⚠️ Вам вынесено предупреждение! ({new_warnings_count}/{MAX_WARNINGS})")
+        pair_key = tuple(sorted((user_id, partner_id)))
+        history = context.bot_data.get(f"history_{pair_key}", "История чата не найдена.")
+        
+        report_text = (
+            f"❗️ **Новая жалоба** ❗️\n\n"
+            f"👤 **От:** `{user_id}`\n"
+            f"🎯 **На:** `{partner_id}`\n"
+            f"📜 **Причина:** {reason.capitalize()}\n\n"
+            f"📝 **История чата:**\n{history}"
+        )
 
-        if new_warnings_count >= MAX_WARNINGS:
-            logger.info(f"Пользователь {partner_id} забанен после {new_warnings_count} предупреждений.")
-            await db.set_ban_status(partner_id, True)
-            await context.bot.send_message(partner_id, "❌ Вы были заблокированы за многочисленные нарушения.")
-            await end_chat_session(user_id, context, "⚠️ Ваш собеседник был заблокирован за нарушения. Чат завершён.")
+        if not ADMIN_IDS:
+             logger.warning("Жалоба получена, но нет активных админов для ее получения!")
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(admin_id, report_text, parse_mode='Markdown')
+            except Exception as e:
+                logger.error(f"Не удалось отправить жалобу админу {admin_id}: {e}")
+
+        await query.message.edit_text("✅ Ваша жалоба отправлена администратору на рассмотрение.")
         return
 
     if data == "unban_request":
-        logger.info(f"Пользователь {user_id} запросил разбан.")
         user = await db.get_or_create_user(user_id)
         if user['balance'] >= COST_FOR_UNBAN:
-            logger.info(f"У пользователя {user_id} достаточно средств для разбана.")
             await db.update_balance(user_id, -COST_FOR_UNBAN)
             await db.set_ban_status(user_id, False)
             await query.message.edit_text(f"✅ Вы успешно разблокированы за {COST_FOR_UNBAN} монет. Ваши предупреждения сброшены.")
             await show_main_menu(user_id, context, as_admin=(user_id in ADMIN_IDS))
         else:
-            logger.info(f"У пользователя {user_id} НЕдостаточно средств для разбана.")
             await query.answer(f"❌ Недостаточно монет. Необходимо {COST_FOR_UNBAN}.", show_alert=True)
         return
 
@@ -215,7 +215,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(u1, "❌ Один из собеседников отказался. Обмен не состоялся.")
                 await context.bot.send_message(u2, "❌ Один из собеседников отказался. Обмен не состоялся.")
             
-            context.bot_data.pop(f"exchange_{pair_key}", None)
             await end_chat_session(user_id, context, "")
         return
 
@@ -285,16 +284,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "interests_done":
         selected_interests = context.user_data.get("interests", [])
-        logger.info(f"Пользователь {user_id} нажал 'Готово'. Выбранные интересы: {selected_interests}")
-        
         if not selected_interests:
-            logger.info(f"У пользователя {user_id} не выбраны интересы. Показываем alert.")
             await query.answer("❌ Пожалуйста, выберите хотя бы один интерес.", show_alert=True)
             return
-        
+
         user = await db.get_or_create_user(user_id)
         if user['is_banned']:
-            logger.info(f"Забаненный пользователь {user_id} попытался начать поиск.")
             await query.answer("❌ Вы заблокированы и не можете искать собеседника.", show_alert=True)
             await query.message.delete()
             await show_main_menu(user_id, context, as_admin=(user_id in ADMIN_IDS))
@@ -335,7 +330,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     user_id = update.effective_user.id
     text = update.message.text
-    logger.info(f"Получено сообщение от user_id: {user_id}, текст: '{text}'")
 
     if user_id in ADMIN_IDS:
         if context.user_data.get('awaiting_ban_id'):
@@ -398,7 +392,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("awaiting_admin_password", None)
         return
 
-    # Забаненные пользователи могут только проверять баланс, рефералов или пытаться разбаниться
     if user['is_banned']:
         if text == "💰 Мой баланс":
             await update.message.reply_text(f"💰 Ваш баланс: {user['balance']} монет.", reply_markup=kb.get_balance_keyboard())
@@ -411,22 +404,24 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user['status'] == 'in_chat':
-        if text == "⚠️ Пожаловаться":
-            logger.info(f"Пользователь {user_id} нажал кнопку 'Пожаловаться'.")
-            if user['status'] == 'in_chat':
-                logger.info("Пользователь в чате, показываем меню жалобы.")
-                await update.message.reply_text("Выберите причину жалобы:", reply_markup=kb.get_report_keyboard())
-            else: # Эта ветка сейчас недостижима, но оставим для надежности
-                logger.info("Пользователь не в чате, жалоба невозможна.")
-                await update.message.reply_text("❌ Вы не в чате.")
-            return
+        partner_id = user['partner_id']
+        pair_key = tuple(sorted((user_id, partner_id)))
 
+        if f"history_{pair_key}" not in context.bot_data:
+            context.bot_data[f"history_{pair_key}"] = ""
+        context.bot_data[f"history_{pair_key}"] += f"[{user_id}]: {text}\n"
+
+        if text == "⚠️ Пожаловаться":
+            await update.message.reply_text("Выберите причину жалобы:", reply_markup=kb.get_report_keyboard())
+            return
+            
         if re.search(r'@[A-Za-z0-9_]{4,}', text):
             await db.set_ban_status(user_id, True)
-            await update.message.reply_text("❌ Вы были забанены за попытку разглашения личной информации.", reply_markup=kb.remove_keyboard())
+            await context.bot.send_message(user_id, "❌ Вы были забанены за попытку разглашения личной информации.", reply_markup=kb.remove_keyboard())
             await end_chat_session(user_id, context, "⚠️ Ваш собеседник был забанен за нарушение правил. Чат завершён.")
             return
-        await context.bot.send_message(user['partner_id'], text)
+            
+        await context.bot.send_message(partner_id, text)
     else:
         if text == "🔍 Поиск собеседника":
             context.user_data["interests"] = []
@@ -462,3 +457,4 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(caption)
         else:
             await update.message.reply_text(f"❌ Недостаточно монет для отправки медиа (нужно {COST_FOR_PHOTO}).")
+
