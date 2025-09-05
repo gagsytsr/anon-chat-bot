@@ -7,7 +7,7 @@ import database as db
 import keyboards as kb
 from config import (
     ADMIN_PASSWORD, ADMIN_IDS, REWARD_FOR_REFERRAL, COST_FOR_18PLUS,
-    COST_FOR_UNBAN, COST_FOR_PHOTO, CHAT_TIMER_SECONDS
+    COST_FOR_UNBAN, COST_FOR_PHOTO, CHAT_TIMER_SECONDS, MAX_WARNINGS
 )
 
 logging.basicConfig(
@@ -18,15 +18,21 @@ logger = logging.getLogger(__name__)
 
 # --- Вспомогательные функции ---
 async def show_main_menu(user_id: int, context: ContextTypes.DEFAULT_TYPE, as_admin=False):
-    """Отображает главное меню."""
+    """Отображает главное меню, в том числе для забаненных."""
     user = await db.get_or_create_user(user_id)
-    text = "Главное меню:"
-    keyboard = kb.get_main_menu_keyboard()
-
+    
     if user['is_banned']:
-        await context.bot.send_message(user_id, "❌ Вы заблокированы.", reply_markup=kb.get_ban_keyboard())
+        text = (
+            f"❌ **Доступ к поиску ограничен!**\n\n"
+            f"У вас {user['warnings']} из {MAX_WARNINGS} предупреждений. "
+            f"Вы можете разбанить себя и сбросить счётчик предупреждений."
+        )
+        keyboard = kb.get_ban_keyboard()
+        await context.bot.send_message(user_id, text, reply_markup=keyboard, parse_mode='Markdown')
         return
 
+    text = "Главное меню:"
+    keyboard = kb.get_main_menu_keyboard()
     if as_admin:
         text = "Вы вошли как администратор."
         keyboard = kb.get_admin_reply_keyboard()
@@ -117,6 +123,39 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     await query.answer()
+    
+    if data.startswith("report_"):
+        reason = data.split('_')[1]
+        if reason == 'cancel':
+            await query.message.delete()
+            return
+
+        user_data = await db.get_or_create_user(user_id)
+        partner_id = user_data.get('partner_id')
+        if not partner_id:
+            await query.edit_message_text("❌ Чат уже завершён.")
+            return
+
+        new_warnings_count = await db.add_warning(partner_id)
+        await query.message.edit_text("✅ Ваша жалоба отправлена. Собеседнику вынесено предупреждение.")
+        await context.bot.send_message(partner_id, f"⚠️ Вам вынесено предупреждение! ({new_warnings_count}/{MAX_WARNINGS})")
+
+        if new_warnings_count >= MAX_WARNINGS:
+            await db.set_ban_status(partner_id, True)
+            await context.bot.send_message(partner_id, "❌ Вы были заблокированы за многочисленные нарушения.")
+            await end_chat_session(user_id, context, "⚠️ Ваш собеседник был заблокирован за нарушения. Чат завершён.")
+        return
+
+    if data == "unban_request":
+        user = await db.get_or_create_user(user_id)
+        if user['balance'] >= COST_FOR_UNBAN:
+            await db.update_balance(user_id, -COST_FOR_UNBAN)
+            await db.set_ban_status(user_id, False)
+            await query.message.edit_text(f"✅ Вы успешно разблокированы за {COST_FOR_UNBAN} монет. Ваши предупреждения сброшены.")
+            await show_main_menu(user_id, context, as_admin=(user_id in ADMIN_IDS))
+        else:
+            await query.answer(f"❌ Недостаточно монет. Необходимо {COST_FOR_UNBAN}.", show_alert=True)
+        return
 
     if data == "back_to_main":
         await query.message.delete()
@@ -155,7 +194,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user1_info = await context.bot.get_chat(u1)
                 user2_info = await context.bot.get_chat(u2)
                 
-                # 👇 ВОТ ИСПРАВЛЕНИЕ: Используем first_name, если нет username
                 user1_name = f"@{user1_info.username}" if user1_info.username else user1_info.first_name
                 user2_name = f"@{user2_info.username}" if user2_info.username else user2_info.first_name
 
@@ -240,6 +278,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         user = await db.get_or_create_user(user_id)
+        if user['is_banned']:
+            await query.answer("❌ Вы заблокированы и не можете искать собеседника.", show_alert=True)
+            await query.message.delete()
+            await show_main_menu(user_id, context, as_admin=(user_id in ADMIN_IDS))
+            return
+
         if "18+" in selected_interests and not user['unlocked_18plus']:
             if user['balance'] >= COST_FOR_18PLUS:
                 await db.update_balance(user_id, -COST_FOR_18PLUS)
@@ -337,8 +381,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("awaiting_admin_password", None)
         return
 
+    # Забаненные пользователи могут только проверять баланс, рефералов или пытаться разбаниться
     if user['is_banned']:
-        await show_main_menu(user_id, context)
+        if text == "💰 Мой баланс":
+            await update.message.reply_text(f"💰 Ваш баланс: {user['balance']} монет.", reply_markup=kb.get_balance_keyboard())
+        else:
+             await show_main_menu(user_id, context)
         return
 
     if text == "🔐 Админ-панель" and is_admin:
@@ -346,6 +394,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user['status'] == 'in_chat':
+        if text == "⚠️ Пожаловаться":
+            await update.message.reply_text("Выберите причину жалобы:", reply_markup=kb.get_report_keyboard())
+            return
         if re.search(r'@[A-Za-z0-9_]{4,}', text):
             await db.set_ban_status(user_id, True)
             await update.message.reply_text("❌ Вы были забанены за попытку разглашения личной информации.", reply_markup=kb.remove_keyboard())
@@ -359,12 +410,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == "💰 Мой баланс":
             await update.message.reply_text(f"💰 Ваш баланс: {user['balance']} монет.", reply_markup=kb.get_balance_keyboard())
         elif text == "🔗 Мои рефералы":
-            text = (
+            text_ref = (
                 f"🔗 **Приглашайте друзей и получайте монеты!**\n\n"
                 f"За каждого пользователя, который запустит бота по вашей ссылке, вы получите **{REWARD_FOR_REFERRAL} монет**.\n\n"
                 f"Ваша уникальная ссылка:\n`https://t.me/{context.bot.username}?start={user_id}`"
             )
-            await update.message.reply_text(text, reply_markup=kb.get_back_keyboard(), parse_mode='Markdown')
+            await update.message.reply_text(text_ref, reply_markup=kb.get_back_keyboard(), parse_mode='Markdown')
         else:
             await show_main_menu(user_id, context, as_admin=is_admin)
 
