@@ -39,7 +39,6 @@ async def end_chat_session(user_id: int, context: ContextTypes.DEFAULT_TYPE, mes
     user = await db.get_or_create_user(user_id)
     partner_id = user['partner_id']
     
-    # Формируем уникальное имя для таймера на основе ID обоих пользователей
     if partner_id:
         pair_key = tuple(sorted((user_id, partner_id)))
         job_name = f"chat_timer_{pair_key[0]}_{pair_key[1]}"
@@ -48,11 +47,13 @@ async def end_chat_session(user_id: int, context: ContextTypes.DEFAULT_TYPE, mes
             job.schedule_removal()
             logger.info(f"Таймер {job_name} удален.")
 
-    # Завершаем чат в базе данных
     actual_partner_id = await db.end_chat(user_id)
+    
     if actual_partner_id:
+        if message_for_partner:
+            await context.bot.send_message(actual_partner_id, message_for_partner, reply_markup=kb.remove_keyboard())
+        
         is_partner_admin = actual_partner_id in ADMIN_IDS
-        await context.bot.send_message(actual_partner_id, message_for_partner, reply_markup=kb.remove_keyboard())
         await show_main_menu(actual_partner_id, context, as_admin=is_partner_admin)
     
     is_admin = user_id in ADMIN_IDS
@@ -62,7 +63,6 @@ async def end_chat_session(user_id: int, context: ContextTypes.DEFAULT_TYPE, mes
 
 # --- Обработчики команд ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /start с правилами."""
     user_id = update.effective_user.id
     user = await db.get_or_create_user(user_id)
     if context.args and not user['invited_by']:
@@ -87,7 +87,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Вход в админ-панель."""
     user_id = update.effective_user.id
     if user_id in ADMIN_IDS:
         await update.message.reply_text("🔐 Админ-панель", reply_markup=kb.get_admin_keyboard())
@@ -98,7 +97,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Логика таймера ---
 async def ask_for_exchange(context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет предложение обменяться никами."""
     job_data = context.job.data
     u1, u2 = job_data['user1'], job_data['user2']
 
@@ -106,12 +104,11 @@ async def ask_for_exchange(context: ContextTypes.DEFAULT_TYPE):
     if user1_data['status'] != 'in_chat' or user1_data['partner_id'] != u2:
         return
 
-    # Сохраняем состояние ожидания ответа в bot_data
     pair_key = tuple(sorted((u1, u2)))
     context.bot_data[f"exchange_{pair_key}"] = {u1: None, u2: None}
 
-    await context.bot.send_message(u1, "Время вышло! Хотите обменяться никами (@username) с собеседником?", reply_markup=kb.get_name_exchange_keyboard())
-    await context.bot.send_message(u2, "Время вышло! Хотите обменяться никами (@username) с собеседником?", reply_markup=kb.get_name_exchange_keyboard())
+    await context.bot.send_message(u1, "Время вышло! Хотите обменяться никами с собеседником?", reply_markup=kb.get_name_exchange_keyboard())
+    await context.bot.send_message(u2, "Время вышло! Хотите обменяться никами с собеседником?", reply_markup=kb.get_name_exchange_keyboard())
 
 
 # --- Обработчик кнопок (Callback) ---
@@ -147,22 +144,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pair_key = tuple(sorted((user_id, partner_id)))
         exchange_data = context.bot_data.get(f"exchange_{pair_key}")
         if exchange_data is None:
-            return # Предложение об обмене уже неактуально
+            return
 
         exchange_data[user_id] = answer
         await query.message.edit_text(f"Вы выбрали: '{answer}'. Ожидаем ответа собеседника...")
 
-        # Проверяем, ответили ли оба
         if all(response is not None for response in exchange_data.values()):
             u1, u2 = pair_key
             if exchange_data[u1] == 'yes' and exchange_data[u2] == 'yes':
                 user1_info = await context.bot.get_chat(u1)
                 user2_info = await context.bot.get_chat(u2)
-                user1_username = f"@{user1_info.username}" if user1_info.username else "скрыт"
-                user2_username = f"@{user2_info.username}" if user2_info.username else "скрыт"
+                
+                # 👇 ВОТ ИСПРАВЛЕНИЕ: Используем first_name, если нет username
+                user1_name = f"@{user1_info.username}" if user1_info.username else user1_info.first_name
+                user2_name = f"@{user2_info.username}" if user2_info.username else user2_info.first_name
 
-                await context.bot.send_message(u1, f"🥳 Собеседник согласился! Его ник: {user2_username}")
-                await context.bot.send_message(u2, f"🥳 Собеседник согласился! Его ник: {user1_username}")
+                await context.bot.send_message(u1, f"🥳 Собеседник согласился! Его контакт: {user2_name}")
+                await context.bot.send_message(u2, f"🥳 Собеседник согласился! Его контакт: {user1_name}")
             else:
                 await context.bot.send_message(u1, "❌ Один из собеседников отказался. Обмен не состоялся.")
                 await context.bot.send_message(u2, "❌ Один из собеседников отказался. Обмен не состоялся.")
@@ -389,4 +387,3 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(caption)
         else:
             await update.message.reply_text(f"❌ Недостаточно монет для отправки медиа (нужно {COST_FOR_PHOTO}).")
-
