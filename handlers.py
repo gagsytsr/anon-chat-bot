@@ -22,9 +22,10 @@ async def show_main_menu(user_id: int, context: ContextTypes.DEFAULT_TYPE, as_ad
     user = await db.get_or_create_user(user_id)
     
     if user['is_banned']:
+        # ИСПРАВЛЕНИЕ: Теперь здесь всегда будет показываться MAX_WARNINGS
         text = (
             f"❌ **Доступ к поиску ограничен!**\n\n"
-            f"Вы заблокированы, т.к. у вас {user['warnings']} из {MAX_WARNINGS} предупреждений. "
+            f"Вы заблокированы, т.к. у вас {MAX_WARNINGS} из {MAX_WARNINGS} предупреждений. "
             f"Вы можете разбанить себя, чтобы сбросить счётчик."
         )
         # Отправляем инлайн-кнопку для разбана, но оставляем Reply-клавиатуру для доступа к балансу
@@ -476,4 +477,3 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(caption)
         else:
             await update.message.reply_text(f"❌ Недостаточно монет для отправки медиа (нужно {COST_FOR_PHOTO}).")
-
