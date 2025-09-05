@@ -24,6 +24,11 @@ def get_admin_reply_keyboard():
 def get_chat_keyboard():
     keyboard = [["🚫 Завершить чат"], ["🔍 Начать новый чат"], ["⚠️ Пожаловаться"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+def get_cancel_search_keyboard():
+    """Клавиатура с кнопкой 'Отменить поиск'."""
+    keyboard = [[InlineKeyboardButton("❌ Отменить поиск", callback_data="cancel_search")]]
+    return InlineKeyboardMarkup(keyboard)
 
 def get_ban_keyboard():
     keyboard = [[InlineKeyboardButton(f"Разблокировать за {COST_FOR_UNBAN} монет", callback_data="unban_request")]]
@@ -48,7 +53,6 @@ def get_name_exchange_keyboard():
     return InlineKeyboardMarkup(keyboard)
     
 def get_report_keyboard():
-    """Клавиатура для выбора причины жалобы."""
     keyboard = [
         [InlineKeyboardButton("Оскорбления", callback_data="report_insult")],
         [InlineKeyboardButton("Спам", callback_data="report_spam")],
