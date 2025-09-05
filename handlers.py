@@ -24,10 +24,12 @@ async def show_main_menu(user_id: int, context: ContextTypes.DEFAULT_TYPE, as_ad
     if user['is_banned']:
         text = (
             f"❌ **Доступ к поиску ограничен!**\n\n"
-            f"Вы заблокированы. Вы можете разбанить себя и сбросить счётчик предупреждений."
+            f"Вы заблокированы, т.к. у вас {user['warnings']} из {MAX_WARNINGS} предупреждений. "
+            f"Вы можете разбанить себя, чтобы сбросить счётчик."
         )
-        keyboard = kb.get_ban_keyboard()
-        await context.bot.send_message(user_id, text, reply_markup=keyboard, parse_mode='Markdown')
+        # Отправляем инлайн-кнопку для разбана, но оставляем Reply-клавиатуру для доступа к балансу
+        await context.bot.send_message(user_id, text, reply_markup=kb.get_ban_keyboard(), parse_mode='Markdown')
+        await context.bot.send_message(user_id, "Вам доступны другие разделы меню.", reply_markup=kb.get_main_menu_keyboard())
         return
 
     text = "Главное меню:"
@@ -393,10 +395,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user['is_banned']:
-        if text == "💰 Мой баланс":
+        if text == "🔍 Поиск собеседника":
+            await show_main_menu(user_id, context)
+        elif text == "💰 Мой баланс":
             await update.message.reply_text(f"💰 Ваш баланс: {user['balance']} монет.", reply_markup=kb.get_balance_keyboard())
+        elif text == "🔗 Мои рефералы":
+            text_ref = (
+                f"🔗 **Приглашайте друзей и получайте монеты!**\n\n"
+                f"За каждого пользователя, который запустит бота по вашей ссылке, вы получите **{REWARD_FOR_REFERRAL} монет**.\n\n"
+                f"Ваша уникальная ссылка:\n`https://t.me/{context.bot.username}?start={user_id}`"
+            )
+            await update.message.reply_text(text_ref, reply_markup=kb.get_back_keyboard(), parse_mode='Markdown')
+        elif is_admin and text == "🔐 Админ-панель":
+             await admin_command(update, context)
         else:
-             await show_main_menu(user_id, context)
+            await show_main_menu(user_id, context)
         return
 
     if text == "🔐 Админ-панель" and is_admin:
@@ -414,13 +427,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == "⚠️ Пожаловаться":
             await update.message.reply_text("Выберите причину жалобы:", reply_markup=kb.get_report_keyboard())
             return
+        
+        forbidden_keywords = ['@', 'ник', 'никнейм', 'username', 'юзернейм']
+        if any(keyword in text.lower() for keyword in forbidden_keywords):
+            new_warnings = await db.add_warning(user_id)
             
-        if re.search(r'@[A-Za-z0-9_]{4,}', text):
-            await db.set_ban_status(user_id, True)
-            await context.bot.send_message(user_id, "❌ Вы были забанены за попытку разглашения личной информации.", reply_markup=kb.remove_keyboard())
-            await end_chat_session(user_id, context, "⚠️ Ваш собеседник был забанен за нарушение правил. Чат завершён.")
+            await context.bot.send_message(user_id, f"⚠️ **Предупреждение {new_warnings}/{MAX_WARNINGS}**: Нельзя разглашать личную информацию.", parse_mode='Markdown')
+
+            if new_warnings >= MAX_WARNINGS:
+                await db.set_ban_status(user_id, True)
+                await context.bot.send_message(user_id, "❌ **Вы были заблокированы за многократные нарушения.**", reply_markup=kb.remove_keyboard(), parse_mode='Markdown')
+                await end_chat_session(user_id, context, "⚠️ Ваш собеседник был забанен за нарушение правил. Чат завершён.")
             return
-            
+
         await context.bot.send_message(partner_id, text)
     else:
         if text == "🔍 Поиск собеседника":
