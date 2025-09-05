@@ -32,8 +32,8 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.message_handler))
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handlers.media_handler))
 
-    # Регистрация функции для корректного закрытия соединения с БД при остановке бота
-    app.post_shutdown(db.close_db)
+    # 👇 ЭТА СТРОКА ВЫЗЫВАЛА ОШИБКУ. МЫ ВРЕМЕННО ОТКЛЮЧАЕМ ЕЁ.
+    # app.post_shutdown(db.close_db)
 
     # Запуск бота
     await app.run_polling()
@@ -44,3 +44,4 @@ if __name__ == "__main__":
     except Exception as e:
         # Эта строка запишет в лог ПОЛНУЮ информацию об ошибке
         logging.critical("КРИТИЧЕСКАЯ ОШИБКА ПРИ ЗАПУСКЕ БОТА:", exc_info=True)
+
