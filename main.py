@@ -1,32 +1,45 @@
+# main.py
 import asyncio
 import logging
-import os
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
-from database import init_db
-from handlers.start import start
-from handlers.admin import admin_command
-from handlers.messages import message_handler
-from handlers.media import media_handler
 
-logging.basicConfig(level=logging.INFO)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, filters
+)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+from config import BOT_TOKEN
+import database as db
+import handlers
+
+# Настройка логирования
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
 async def main():
-    await init_db()
+    """Основная функция для запуска бота."""
+    # Инициализация соединения с базой данных
+    await db.init_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(CallbackQueryHandler(...))  # твой callback обработчик
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VOICE, media_handler))
+    # Регистрация обработчиков
+    app.add_handler(CommandHandler("start", handlers.start))
+    app.add_handler(CommandHandler("admin", handlers.admin_command))
+    app.add_handler(CallbackQueryHandler(handlers.handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.message_handler))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VOICE, handlers.media_handler))
+    
+    # Добавляем задачу для graceful shutdown
+    app.post_shutdown(db.close_db)
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await asyncio.Event().wait()
+    # Запуск бота
+    await app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logging.critical(f"Критическая ошибка при запуске бота: {e}")
+
