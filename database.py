@@ -2,14 +2,9 @@ import asyncio
 import asyncpg
 from config import DATABASE_URL
 
-# Пул соединений будет храниться здесь для повторного использования
 pool = None
 
 async def init_db():
-    """
-    Инициализирует пул соединений и создает таблицу пользователей,
-    если она еще не существует.
-    """
     global pool
     if pool:
         return
@@ -26,23 +21,16 @@ async def init_db():
                 invited_by BIGINT,
                 referrals_count INTEGER DEFAULT 0 NOT NULL,
                 interests TEXT[],
-                status TEXT DEFAULT 'idle' NOT NULL, -- 'idle', 'waiting', 'in_chat'
+                status TEXT DEFAULT 'idle' NOT NULL,
                 partner_id BIGINT
             );
         """)
 
 async def close_db():
-    """
-    Корректно закрывает пул соединений при остановке бота.
-    """
     if pool:
         await pool.close()
 
 async def get_or_create_user(user_id: int):
-    """
-    Получает пользователя из БД. Если пользователя нет, создает новую запись.
-    Возвращает данные пользователя.
-    """
     async with pool.acquire() as conn:
         user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
         if not user:
@@ -62,11 +50,7 @@ async def update_user_status(user_id: int, status: str):
 
 # --- Функции для чатов ---
 async def find_partner(user_id: int, interests: list):
-    query = """
-        SELECT user_id FROM users
-        WHERE status = 'waiting' AND user_id != $1 AND interests && $2::text[]
-        LIMIT 1;
-    """
+    query = "SELECT user_id FROM users WHERE status = 'waiting' AND user_id != $1 AND interests && $2::text[] LIMIT 1;"
     return await pool.fetchval(query, user_id, interests)
 
 async def create_chat(user1_id: int, user2_id: int):
@@ -99,3 +83,26 @@ async def add_warning(user_id: int):
 
 async def unlock_18plus(user_id: int):
     await pool.execute("UPDATE users SET unlocked_18plus = TRUE WHERE user_id = $1", user_id)
+
+# --- Админ-функции ---
+async def get_all_active_users():
+    """Возвращает список ID всех пользователей в активных чатах."""
+    return await pool.fetch("SELECT user_id FROM users WHERE status = 'in_chat'")
+
+async def get_admin_stats():
+    """Собирает статистику для админ-панели."""
+    queries = [
+        pool.fetchval("SELECT COUNT(*) FROM users WHERE agreed_to_rules = TRUE;"),
+        pool.fetchval("SELECT COUNT(*) FROM users WHERE status = 'in_chat';"),
+        pool.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = TRUE;"),
+        pool.fetchval("SELECT SUM(referrals_count) FROM users;"),
+        pool.fetchval("SELECT SUM(balance) FROM users;")
+    ]
+    results = await asyncio.gather(*queries)
+    return {
+        "total_users": results[0] or 0,
+        "active_chats": (results[1] or 0) // 2,
+        "banned_users": results[2] or 0,
+        "total_referrals": results[3] or 0,
+        "total_balance": results[4] or 0,
+    }
